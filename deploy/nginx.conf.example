@@ -1,0 +1,42 @@
+# 放在现有 http 上下文；按实际环境替换静态路径、域名、后端 upstream。
+# 通常由现有 HTTPS 网关转发到这里。本次没有执行发布。
+map $uri $novid_cache_control {
+    default "no-store";
+    ~^/assets/ "public, max-age=31536000, immutable";
+}
+upstream novid_backend { server 127.0.0.1:8080; }
+server {
+    listen 80;
+    server_name _;
+    root /srv/novid/dist;
+    index index.html;
+    add_header Cache-Control $novid_cache_control always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'" always;
+    client_max_body_size 11m;
+    location ^~ /api/ {
+        proxy_pass http://novid_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 100s;
+    }
+    location = /actuator/health {
+        proxy_pass http://novid_backend;
+        proxy_cache off;
+    }
+    location ^~ /assets/ { try_files $uri =404; }
+    location = /index.html { try_files $uri =404; }
+    location = /run-inspector.html { try_files /index.html =404; }
+    # 合法 SPA 路由使用入口；其他缺失地址 / 资源返回 404。
+    location ~ ^/(login|change-password|settings|chat|knowledge-bases|documents|approvals|tasks|memories|runs|admin/users)(/.*)?$ {
+        try_files $uri /index.html;
+    }
+    location = / { try_files /index.html =404; }
+    location / { try_files $uri =404; }
+}
+

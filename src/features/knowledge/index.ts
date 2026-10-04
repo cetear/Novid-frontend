@@ -1,0 +1,5 @@
+export { knowledgeApi, scopeQuery } from './api'
+export { useKnowledgeScope, selfScope } from './store'
+export { default as ScopePicker } from './components/ScopePicker.vue'
+export { default as OwnBaseSelect } from './components/OwnBaseSelect.vue'
+export { default as SourceDrawer } from './components/SourceDrawer.vue'
