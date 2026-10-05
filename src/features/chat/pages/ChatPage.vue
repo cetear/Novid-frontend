@@ -1,7 +1,15 @@
 <script setup lang="ts">
-import { ref, watch, onScopeDispose, computed } from 'vue'
+import { ref, watch, onScopeDispose, computed, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { Promotion, Collection, Document, Close, MagicStick } from '@element-plus/icons-vue'
+import {
+  Promotion,
+  Collection,
+  Document,
+  Close,
+  MagicStick,
+  Setting,
+  ChatDotRound,
+} from '@element-plus/icons-vue'
 import { useAuth } from '@/features/auth'
 import { ScopePicker, SourceDrawer, OwnBaseSelect, useKnowledgeScope } from '@/features/knowledge'
 import { chatApi, dependenciesFrom } from '../api'
@@ -12,11 +20,11 @@ import { ApiError, errorMessage, isAbort } from '@/shared/api/errors'
 import { useAction } from '@/shared/lib/useAction'
 import { positiveId } from '@/shared/lib/validation'
 import { usePageSignal } from '@/shared/lib/usePageSignal'
-import PageHeader from '@/shared/ui/PageHeader.vue'
 import Feedback from '@/shared/ui/Feedback.vue'
 import MarkdownView from '@/shared/ui/MarkdownView.vue'
 import StatusBadge from '@/shared/ui/StatusBadge.vue'
-import PageStepper from '@/shared/ui/PageStepper.vue'
+import ChatSessionList from '../components/ChatSessionList.vue'
+import '../chat-workspace.css'
 interface Message {
   id: string
   question: string
@@ -25,6 +33,7 @@ interface Message {
   result: AiResult | null
   stage: string
   error: string
+  historyCursor: number
 }
 const auth = useAuth(),
   scope = useKnowledgeScope(),
@@ -35,6 +44,49 @@ const question = ref(''),
   messages = ref<Message[]>([]),
   source = ref<EvidenceBundle | null>(null)
 const sessions = useSessions()
+const displayedHistory = computed(() => {
+  const latest = sessions.active.value ? messages.value.at(-1) : null
+  return latest?.result
+    ? sessions.history.value.filter(
+        (event) => event.seq <= latest.historyCursor || !['USER', 'ASSISTANT'].includes(event.role),
+      )
+    : sessions.history.value
+})
+const settingsOpen = ref(false),
+  sessionListOpen = ref(false),
+  thread = ref<HTMLElement | null>(null)
+const compactQuery = window.matchMedia('(max-width: 1100px)'),
+  compact = ref(compactQuery.matches)
+function resizeWorkspace(event: MediaQueryListEvent) {
+  compact.value = event.matches
+  sessionListOpen.value = false
+}
+compactQuery.addEventListener('change', resizeWorkspace)
+onScopeDispose(() => compactQuery.removeEventListener('change', resizeWorkspace))
+let followConversation = true
+function trackScroll() {
+  if (thread.value)
+    followConversation =
+      thread.value.scrollHeight - thread.value.scrollTop - thread.value.clientHeight < 160
+}
+watch(
+  () => [messages.value.map((m) => m.answer + m.stage).join(''), sessions.history.value],
+  async () => {
+    if (!followConversation) return
+    await nextTick()
+    thread.value?.scrollTo({ top: thread.value.scrollHeight })
+  },
+  { deep: true },
+)
+const conversationTitle = computed(
+  () => sessions.active.value?.title || (sessions.active.value ? '未命名会话' : '单轮问答'),
+)
+const modelLabel = computed(
+  () =>
+    ({ knowledge: '知识问答', economy: '经济', analysis: '分析', report: '报告' })[
+      modelProfile.value ?? 'knowledge'
+    ],
+)
 const modelProfile = ref<ChatOptions['modelProfile']>(),
   responseFormat = ref<'TEXT' | 'STRUCTURED'>('TEXT'),
   toolMode = ref<'OFF' | 'READ_ONLY'>('OFF')
@@ -106,6 +158,8 @@ watch(
 )
 onScopeDispose(clear)
 async function openSession(id: number) {
+  sessionListOpen.value = false
+  followConversation = true
   clear()
   await sessions.select(id)
   if (sessions.active.value) {
@@ -117,15 +171,19 @@ async function openSession(id: number) {
   }
 }
 async function newSession() {
+  followConversation = true
   clear()
   sessions.clear()
   await sessions.create()
+  if (sessions.active.value) sessionListOpen.value = false
 }
 async function refreshSession() {
   clear()
   await sessions.sync()
 }
 function singleRound() {
+  sessionListOpen.value = false
+  followConversation = true
   clear()
   sessions.clear()
 }
@@ -135,6 +193,7 @@ async function removeSession() {
 }
 async function ask() {
   if (sending.value || sessions.busy.value || !question.value.trim()) return
+  followConversation = true
   const current = ++generation,
     prompt = question.value
   const frozen = { ...scope.scope, knowledgeBaseIds: [...scope.scope.knowledgeBaseIds] }
@@ -155,6 +214,7 @@ async function ask() {
     result: null,
     stage: '正在处理',
     error: '',
+    historyCursor: sessions.history.value.at(-1)?.seq ?? 0,
   }
   messages.value = session ? [message] : [...messages.value.slice(-19), message]
   const entry = messages.value[messages.value.length - 1]!
@@ -247,185 +307,242 @@ function prepare() {
 }
 </script>
 <template>
-  <PageHeader
-    eyebrow="ASK YOUR KNOWLEDGE"
-    title="带着问题，走进知识。"
-    description="单轮提问或继续本人会话。会话保存完整历史，模型使用有限上下文；长期偏好需明确保存。"
-  /><ScopePicker :admin="auth.user?.role === 'ADMIN'" /><Feedback :error="error" />
-  <details class="panel session-panel">
-    <summary>
-      本人会话 ·
-      {{
-        sessions.active.value
-          ? sessions.active.value.title || '#' + sessions.active.value.id
-          : '当前为单轮问答'
-      }}
-    </summary>
-    <Feedback :error="sessions.error.value" />
-    <div class="toolbar">
-      <el-input
-        v-model="sessions.title.value"
-        maxlength="200"
-        aria-label="新会话标题"
-        placeholder="输入新会话标题"
-        :disabled="sending || sessions.busy.value"
+  <div class="chat-workspace">
+    <aside v-if="!compact" class="conversation-sidebar" aria-label="本人会话">
+      <ChatSessionList
+        :sessions="sessions"
+        :sending="sending"
+        @title="sessions.title.value = $event"
+        @open="openSession"
+        @create="newSession"
+        @single="singleRound"
+        @refresh="refreshSession"
+        @remove="removeSession"
       />
-      <el-button :disabled="sending || sessions.busy.value" @click="newSession">新建会话</el-button>
-      <el-button :disabled="sending || sessions.busy.value" @click="singleRound"
-        >单轮问答</el-button
-      >
-      <el-button :disabled="sending || sessions.busy.value" @click="sessions.refreshList()"
-        >刷新会话列表</el-button
-      >
-    </div>
-    <div class="toolbar session-links">
-      <el-button
-        v-for="session in sessions.list.value"
-        :key="session.id"
-        text
-        :disabled="sending || sessions.busy.value"
-        @click="openSession(session.id)"
-        >{{ session.title || '未命名会话' }} · #{{ session.id }}</el-button
-      >
-    </div>
-    <PageStepper
-      :page="sessions.page.value"
-      :count="sessions.list.value.length"
-      :busy="sending || sessions.busy.value"
-      @change="sessions.refreshList"
-    />
-    <div v-if="sessions.active.value" class="toolbar">
-      <span class="muted small"
-        >会话 #{{ sessions.active.value.id }} · 版本 {{ sessions.active.value.version }}</span
-      >
-      <el-button :disabled="sending || sessions.busy.value" @click="refreshSession"
-        >核对服务端历史</el-button
-      >
-      <el-popconfirm title="删除该会话及历史？" @confirm="removeSession"
-        ><template #reference
-          ><el-button type="danger" plain :disabled="sending || sessions.busy.value"
-            >删除会话</el-button
-          ></template
-        ></el-popconfirm
-      >
-    </div>
-  </details>
-  <section v-if="sessions.active.value" class="panel session-history">
-    <h3>服务端历史</h3>
-    <article v-for="event in sessions.history.value" :key="event.seq" class="structure-row">
-      <span class="muted small"
-        >#{{ event.seq }} · {{ event.role }} · {{ event.status }}
-        <span v-if="event.toolName">· {{ event.toolName }}</span></span
-      >
-      <p v-if="event.status === 'RESTRICTED'">历史内容当前不可访问</p>
-      <MarkdownView v-else-if="event.content" :text="event.content" />
-      <template v-if="event.status !== 'RESTRICTED'">
-        <RouterLink
-          v-for="reference in event.sourceReferences"
-          :key="reference.dependency.documentId + ':' + reference.sectionId"
-          :to="'/documents/' + reference.dependency.documentId"
-          >来源 #{{ reference.dependency.documentId }} · v{{
-            reference.dependency.documentVersion
-          }}（历史版本，仅打开当前文档）</RouterLink
-        >
-      </template>
-    </article>
-    <el-button :disabled="sending || sessions.busy.value" @click="sessions.more"
-      >读取后续历史</el-button
-    >
-  </section>
-  <section v-if="!messages.length" class="chat-welcome">
-    <div class="welcome-symbol">
-      <el-icon aria-hidden="true"><MagicStick /></el-icon>
-    </div>
-    <h2>你的资料里，藏着哪些答案？</h2>
-    <p class="muted">从一个问题开始。回答会附上后端提供的证据，方便回到原文核对。</p>
-    <div class="suggestion-grid">
-      <button
-        v-for="(suggestion, i) in suggestions"
-        :key="suggestion"
-        class="suggestion-card"
-        @click="question = suggestion"
-      >
-        <el-icon><component :is="i === 0 ? Collection : i === 1 ? Document : Promotion" /></el-icon
-        ><span>{{ suggestion }}</span
-        ><span class="suggestion-arrow">↗</span>
-      </button>
-    </div>
-    <div class="welcome-foot"><span class="live-dot" /> 当前范围 · {{ scopeLabel }}</div>
-  </section>
-  <div v-else class="chat-messages">
-    <article v-for="message in messages" :key="message.id" class="chat-exchange">
-      <div class="user-question">
-        <span class="question-avatar">你</span>
-        <p>{{ message.question }}</p>
-      </div>
-      <div class="assistant-answer">
-        <span class="answer-avatar">N·</span>
-        <div class="answer-content">
-          <div class="answer-meta">
-            <strong>Novid</strong><span class="muted small">{{ message.stage }}</span
-            ><StatusBadge v-if="message.result" :status="message.result.status" />
+    </aside>
+    <section class="conversation-pane" aria-label="当前会话">
+      <header class="conversation-header">
+        <div class="conversation-heading">
+          <el-button
+            v-if="compact"
+            text
+            :icon="ChatDotRound"
+            aria-label="打开会话列表"
+            :aria-expanded="sessionListOpen"
+            @click="sessionListOpen = true"
+          />
+          <div>
+            <span class="eyebrow">KNOWLEDGE CHAT</span>
+            <h1>{{ conversationTitle }}</h1>
           </div>
-          <MarkdownView v-if="message.answer" :text="message.answer" />
-          <p v-else class="muted">{{ message.stage }}…</p>
-          <Feedback :error="message.error" />
-          <div v-if="message.citations.length" class="citations">
-            <button
-              v-for="citation in message.citations"
-              :key="citation.evidenceId"
-              @click="source = citation"
+        </div>
+        <div class="conversation-header-actions">
+          <span class="conversation-model"
+            >{{ modelProfile ? modelLabel : '自动选择' }} · {{ scopeLabel }}</span
+          >
+          <el-button :icon="Setting" :aria-expanded="settingsOpen" @click="settingsOpen = true"
+            >会话设置</el-button
+          >
+        </div>
+      </header>
+      <div
+        ref="thread"
+        class="conversation-thread"
+        tabindex="0"
+        aria-label="聊天内容"
+        @scroll="trackScroll"
+      >
+        <Feedback :error="error || sessions.error.value" />
+        <section v-if="sessions.active.value" class="session-history">
+          <div class="history-heading">
+            <span>服务端历史</span><span>版本 {{ sessions.active.value.version }}</span>
+          </div>
+          <article
+            v-for="event in displayedHistory"
+            :key="event.seq"
+            class="structure-row history-message"
+            :class="{ 'history-message-user': event.role === 'USER' }"
+          >
+            <span class="muted small"
+              >#{{ event.seq }} · {{ event.role }} · {{ event.status }}
+              <span v-if="event.toolName">· {{ event.toolName }}</span></span
             >
-              <span>{{ citation.evidenceId }}</span
-              >{{ citation.document.title
-              }}<small>v{{ citation.document.documentVersion }} ↗</small>
+            <p v-if="event.status === 'RESTRICTED'">历史内容当前不可访问</p>
+            <MarkdownView v-else-if="event.content" :text="event.content" />
+            <template v-if="event.status !== 'RESTRICTED'">
+              <RouterLink
+                v-for="reference in event.sourceReferences"
+                :key="reference.dependency.documentId + ':' + reference.sectionId"
+                :to="'/documents/' + reference.dependency.documentId"
+                >来源 #{{ reference.dependency.documentId }} · v{{
+                  reference.dependency.documentVersion
+                }}（历史版本，仅打开当前文档）</RouterLink
+              >
+            </template>
+          </article>
+          <el-button :disabled="sending || sessions.busy.value" @click="sessions.more"
+            >读取后续历史</el-button
+          >
+        </section>
+        <section v-if="!messages.length && !sessions.history.value.length" class="chat-welcome">
+          <div class="welcome-symbol">
+            <el-icon aria-hidden="true"><MagicStick /></el-icon>
+          </div>
+          <h2>你的资料里，藏着哪些答案？</h2>
+          <p class="muted">从一个问题开始。回答会附上后端提供的证据，方便回到原文核对。</p>
+          <div class="suggestion-grid">
+            <button
+              v-for="(suggestion, i) in suggestions"
+              :key="suggestion"
+              class="suggestion-card"
+              @click="question = suggestion"
+            >
+              <el-icon
+                ><component :is="i === 0 ? Collection : i === 1 ? Document : Promotion" /></el-icon
+              ><span>{{ suggestion }}</span
+              ><span class="suggestion-arrow">↗</span>
             </button>
           </div>
-          <div v-if="message.result" class="answer-footer">
-            <span class="muted small"
-              >模型标识 {{ message.result.modelId }} · 尝试 {{ message.result.modelAttempts }} 次
-              <b v-if="message.result.mock">· 测试结果</b></span
-            >
-            <div class="toolbar">
-              <RouterLink
-                v-if="message.result.traceId"
-                :to="'/runs/' + encodeURIComponent(message.result.traceId)"
-                >运行检查</RouterLink
-              ><el-button
-                v-if="message.result.status === 'SUCCESS' && message.result.citations.length"
-                text
-                type="primary"
-                @click="prepareNote(message)"
-                >准备保存笔记 →</el-button
-              >
+          <div class="welcome-foot"><span class="live-dot" /> 当前范围 · {{ scopeLabel }}</div>
+        </section>
+        <div v-if="messages.length" class="chat-messages">
+          <article v-for="message in messages" :key="message.id" class="chat-exchange">
+            <div class="user-question">
+              <span class="question-avatar">你</span>
+              <p>{{ message.question }}</p>
             </div>
+            <div class="assistant-answer">
+              <span class="answer-avatar">N·</span>
+              <div class="answer-content">
+                <div class="answer-meta">
+                  <strong>Novid</strong><span class="muted small">{{ message.stage }}</span
+                  ><StatusBadge v-if="message.result" :status="message.result.status" />
+                </div>
+                <MarkdownView v-if="message.answer" :text="message.answer" />
+                <p v-else class="muted">{{ message.stage }}…</p>
+                <Feedback :error="message.error" />
+                <div v-if="message.citations.length" class="citations">
+                  <button
+                    v-for="citation in message.citations"
+                    :key="citation.evidenceId"
+                    @click="source = citation"
+                  >
+                    <span>{{ citation.evidenceId }}</span
+                    >{{ citation.document.title
+                    }}<small>v{{ citation.document.documentVersion }} ↗</small>
+                  </button>
+                </div>
+                <div v-if="message.result" class="answer-footer">
+                  <span class="muted small"
+                    >模型标识 {{ message.result.modelId }} · 尝试
+                    {{ message.result.modelAttempts }} 次
+                    <b v-if="message.result.mock">· 测试结果</b></span
+                  >
+                  <div class="toolbar">
+                    <RouterLink
+                      v-if="message.result.traceId"
+                      :to="'/runs/' + encodeURIComponent(message.result.traceId)"
+                      >运行检查</RouterLink
+                    ><el-button
+                      v-if="message.result.status === 'SUCCESS' && message.result.citations.length"
+                      text
+                      type="primary"
+                      @click="prepareNote(message)"
+                      >准备保存笔记 →</el-button
+                    >
+                  </div>
+                </div>
+                <p v-if="message.result?.error" class="inline-error">{{ message.result.error }}</p>
+                <details v-if="message.result?.route" class="route-details">
+                  <summary>本次模型选择与尝试</summary>
+                  <p>
+                    {{ message.result.route.profile }} · {{ message.result.route.routingMode }} ·
+                    {{ message.result.route.selectedModelId }}
+                  </p>
+                  <p>{{ message.result.route.selectionReason }}</p>
+                  <p class="muted small">
+                    质量配置
+                    {{ message.result.route.qualityVersion }}；配置版本不代表质量验收。费用未知。
+                  </p>
+                  <p v-for="(attempt, index) in message.result.route.attempts" :key="index">
+                    {{ attempt.modelId }} · {{ attempt.outcome }} · 输入
+                    {{ attempt.inputTokens ?? '未知' }} / 输出
+                    {{ attempt.outputTokens ?? '未知' }} ·
+                    {{ attempt.usageSource }}
+                  </p>
+                </details>
+              </div>
+            </div>
+          </article>
+          <div class="toolbar">
+            <el-button text :disabled="sending" @click="clear">清空本页问答</el-button
+            ><span class="muted small">最多保留本页最近 20 次问题。</span>
           </div>
-          <p v-if="message.result?.error" class="inline-error">{{ message.result.error }}</p>
-          <details v-if="message.result?.route" class="route-details">
-            <summary>本次模型选择与尝试</summary>
-            <p>
-              {{ message.result.route.profile }} · {{ message.result.route.routingMode }} ·
-              {{ message.result.route.selectedModelId }}
-            </p>
-            <p>{{ message.result.route.selectionReason }}</p>
-            <p class="muted small">
-              质量配置 {{ message.result.route.qualityVersion }}；配置版本不代表质量验收。费用未知。
-            </p>
-            <p v-for="(attempt, index) in message.result.route.attempts" :key="index">
-              {{ attempt.modelId }} · {{ attempt.outcome }} · 输入
-              {{ attempt.inputTokens ?? '未知' }} / 输出 {{ attempt.outputTokens ?? '未知' }} ·
-              {{ attempt.usageSource }}
-            </p>
-          </details>
         </div>
       </div>
-    </article>
-    <div class="toolbar">
-      <el-button text :disabled="sending" @click="clear">清空本页问答</el-button
-      ><span class="muted small">最多保留本页最近 20 次问题。</span>
-    </div>
+      <form class="chat-composer" @submit.prevent="ask">
+        <el-input
+          v-model="question"
+          type="textarea"
+          :autosize="{ minRows: 2, maxRows: 6 }"
+          maxlength="2000"
+          aria-label="你的问题"
+          placeholder="写下问题，记得补充必要的背景…"
+          :disabled="sending"
+        />
+        <div class="composer-footer">
+          <span class="muted small">{{ scopeLabel }} · {{ question.length }}/2000</span>
+          <div class="toolbar">
+            <el-button v-if="sending" :icon="Close" @click="controller?.abort()">停止阅读</el-button
+            ><el-button
+              v-else
+              type="primary"
+              native-type="submit"
+              :icon="Promotion"
+              :disabled="!question.trim() || sessions.busy.value"
+              >发送问题</el-button
+            >
+          </div>
+        </div>
+      </form>
+    </section>
   </div>
-  <form class="chat-composer" @submit.prevent="ask">
+  <el-drawer
+    v-model="sessionListOpen"
+    direction="ltr"
+    size="min(300px, 88vw)"
+    title="会话列表"
+    :with-header="false"
+    destroy-on-close
+    class="conversation-list-drawer"
+  >
+    <el-button
+      class="conversation-list-close"
+      text
+      :icon="Close"
+      aria-label="关闭会话列表"
+      @click="sessionListOpen = false"
+    />
+    <ChatSessionList
+      v-if="compact"
+      :sessions="sessions"
+      :sending="sending"
+      @title="sessions.title.value = $event"
+      @open="openSession"
+      @create="newSession"
+      @single="singleRound"
+      @refresh="refreshSession"
+      @remove="removeSession"
+    />
+  </el-drawer>
+  <el-drawer
+    v-model="settingsOpen"
+    title="会话设置"
+    size="min(420px, 100vw)"
+    class="conversation-settings-drawer"
+  >
+    <p class="settings-intro">{{ conversationTitle }} · 设置用于接下来发送的问题。</p>
+    <h3>模型与输出</h3>
     <div class="toolbar chat-options">
       <label
         >模型配置
@@ -463,31 +580,19 @@ function prepare() {
         {{ tool.name }} · {{ tool.description }} · {{ tool.enabled ? '已启用' : '已禁用' }}
       </p>
     </div>
-    <el-input
-      v-model="question"
-      type="textarea"
-      :autosize="{ minRows: 2, maxRows: 6 }"
-      maxlength="2000"
-      aria-label="你的问题"
-      placeholder="写下问题，记得补充必要的背景…"
-      :disabled="sending"
-    />
-    <div class="composer-footer">
-      <span class="muted small">{{ scopeLabel }} · {{ question.length }}/2000</span>
-      <div class="toolbar">
-        <el-checkbox v-model="streaming" :disabled="sending">流式展示</el-checkbox
-        ><el-button v-if="sending" :icon="Close" @click="controller?.abort()">停止阅读</el-button
-        ><el-button
-          v-else
-          type="primary"
-          native-type="submit"
-          :icon="Promotion"
-          :disabled="!question.trim() || sessions.busy.value"
-          >发送问题</el-button
-        >
-      </div>
+    <div class="settings-section">
+      <el-checkbox v-model="streaming" :disabled="sending">流式展示</el-checkbox>
+      <p class="muted small">逐步显示回答内容。</p>
     </div>
-  </form>
+    <div class="settings-section">
+      <h3>读取范围</h3>
+      <ScopePicker :admin="auth.user?.role === 'ADMIN'" />
+      <p class="muted small">修改范围将清空本页回答并退出当前会话，已保存的会话历史保留。</p>
+    </div>
+    <el-button type="primary" class="settings-done" @click="settingsOpen = false"
+      >完成设置</el-button
+    >
+  </el-drawer>
   <SourceDrawer :evidence="source" @close="source = null" /><el-dialog
     v-model="noteOpen"
     title="准备笔记 · 下一步核对并确认"

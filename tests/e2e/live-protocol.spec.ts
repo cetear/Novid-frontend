@@ -96,10 +96,13 @@ test('真实后端：S01–S06 入库、真实模型、会话、笔记、报告�
     await expect(page).toHaveURL(new RegExp('/knowledge-bases/' + baseId + '$'))
   }
   async function applyScope() {
+    const chat = await page.locator('.chat-workspace').count()
+    if (chat) await page.getByRole('button', { name: '会话设置', exact: true }).click()
     await page.locator('.scope-mode .el-select__wrapper').click()
     await page.getByRole('option', { name: '指定知识库', exact: true }).click()
     await page.getByLabel('知识库 ID', { exact: true }).fill(String(baseId))
     await page.getByRole('button', { name: '应用范围', exact: true }).click()
+    if (chat) await page.getByRole('button', { name: '完成设置', exact: true }).click()
   }
   async function taskFinished(id: number) {
     const expires = Date.now() + 360_000
@@ -320,9 +323,11 @@ test('真实后端：S01–S06 入库、真实模型、会话、笔记、报告�
       const session = sessionSchema.parse(await (await api('/sessions/' + sessionId)).json())
       sessions.push(session.id)
       report.sessionId = session.id
+      await page.getByRole('button', { name: '会话设置', exact: true }).click()
       await page.getByLabel('模型配置', { exact: true }).selectOption('knowledge')
       await page.getByLabel('工具续轮', { exact: true }).selectOption('READ_ONLY')
       await page.getByRole('button', { name: '查看可用工具', exact: true }).click()
+      await page.getByRole('button', { name: '完成设置', exact: true }).click()
       const definitions = z
         .array(toolSchema)
         .parse(await (await api('/tools?taskType=KNOWLEDGE_QA')).json())

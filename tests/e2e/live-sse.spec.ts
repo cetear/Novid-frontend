@@ -84,10 +84,12 @@ test('真实后端：SSE 完整交付和只读工具历史复测', async ({ page
         { timeout: 120_000, intervals: [2000] },
       )
       .toBe('READY')
+    await page.getByRole('button', { name: '会话设置', exact: true }).click()
     await page.locator('.scope-mode .el-select__wrapper').click()
     await page.getByRole('option', { name: '指定知识库', exact: true }).click()
     await page.getByLabel('知识库 ID', { exact: true }).fill(String(baseId))
     await page.getByRole('button', { name: '应用范围', exact: true }).click()
+    await page.getByRole('button', { name: '完成设置', exact: true }).click()
     await page.getByLabel('新会话标题').fill(name)
     const created = page.waitForResponse(
       (value) => value.url().endsWith('/sessions') && value.request().method() === 'POST',
@@ -99,8 +101,10 @@ test('真实后端：SSE 完整交付和只读工具历史复测', async ({ page
       (await page.locator('.session-panel').textContent())!.match(/会话 #(\d+) · 版本/)![1],
     )
     report.sessionId = sessionId
+    await page.getByRole('button', { name: '会话设置', exact: true }).click()
     await page.getByLabel('模型配置', { exact: true }).selectOption('knowledge')
     await page.getByLabel('工具续轮', { exact: true }).selectOption('READ_ONLY')
+    await page.getByRole('button', { name: '完成设置', exact: true }).click()
     await page
       .getByLabel('你的问题')
       .fill('请调用 search_knowledge 只读工具核对资料，告诉我项目代号和编号，并提供引用。')

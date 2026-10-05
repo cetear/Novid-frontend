@@ -16,12 +16,79 @@ test('受控接口：凭证失败、登录、刷新清除内存身份', async ({
   await expect(page.getByText('用户名或密码错误', { exact: false })).toBeVisible()
   await page.getByLabel('密码', { exact: true }).fill('test-password-123')
   await page.getByRole('button', { name: '登录工作台' }).click()
-  await expect(page.getByRole('heading', { name: '带着问题，走进知识。' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '单轮问答', level: 1, exact: true })).toBeVisible()
   await page.screenshot({ path: 'var/screenshots/chat-desktop.png', fullPage: true })
   expect(await page.evaluate(() => Object.keys(localStorage))).not.toContain('token')
   await page.reload()
   await expect(page).toHaveURL(/\/login/)
   expect(errors).toEqual([])
+})
+
+test('会话工作区：左侧切换、底部输入、右上参数与移动抽屉', async ({ page }) => {
+  await mockBackend(page)
+  let current = { ...session }
+  const requests: Record<string, unknown>[] = []
+  await page.route('**/api/v1/sessions**', (route) => {
+    const path = new URL(route.request().url()).pathname
+    return route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(
+        path.endsWith('/sessions') ? [current] : path.endsWith('/messages') ? [] : current,
+      ),
+    })
+  })
+  await page.route('**/api/v1/chat/stream', (route) => {
+    requests.push(route.request().postDataJSON())
+    current = { ...current, version: current.version + 1 }
+    return route.fulfill({
+      contentType: 'text/event-stream',
+      body: `id: 1\nevent: progress\ndata: {"stage":"processing"}\n\nid: 2\nevent: done\ndata: ${JSON.stringify({ ...ai, sessionId: session.id, sessionVersion: current.version })}\n\n`,
+    })
+  })
+  await login(page)
+  await expect(page.locator('.conversation-sidebar')).toBeVisible()
+  await page.locator('.session-links .conversation-item').click()
+  await expect(page.locator('.conversation-heading h1')).toHaveText(session.title)
+  const list = await page.locator('.conversation-sidebar').boundingBox()
+  const pane = await page.locator('.conversation-pane').boundingBox()
+  const composer = await page.locator('.chat-composer').boundingBox()
+  expect(list!.x + list!.width).toBeLessThanOrEqual(pane!.x + 1)
+  expect(composer!.y + composer!.height).toBeLessThanOrEqual(page.viewportSize()!.height)
+  await page.getByRole('button', { name: '会话设置', exact: true }).click()
+  await page.getByLabel('模型配置', { exact: true }).selectOption('analysis')
+  await page.getByLabel('回答格式', { exact: true }).selectOption('STRUCTURED')
+  await page.getByLabel('工具续轮', { exact: true }).selectOption('READ_ONLY')
+  await expect(page.getByLabel('回答格式', { exact: true })).toHaveValue('TEXT')
+  await expect(page.getByLabel('回答格式', { exact: true })).toBeDisabled()
+  await expect(page.locator('.conversation-settings-drawer')).toHaveCSS('transform', 'none')
+  await page.screenshot({ path: 'var/screenshots/chat-settings.png' })
+  await page.getByRole('button', { name: '完成设置', exact: true }).click()
+  await page.getByLabel('你的问题').fill('继续研究')
+  await page.getByRole('button', { name: '发送问题' }).click()
+  await expect(page.getByText('完整交付', { exact: true })).toBeVisible()
+  expect(requests).toEqual([
+    expect.objectContaining({
+      modelProfile: 'analysis',
+      responseFormat: 'TEXT',
+      toolMode: 'READ_ONLY',
+      sessionId: session.id,
+      sessionVersion: 1,
+    }),
+  ])
+  await page.setViewportSize({ width: 375, height: 812 })
+  await expect(page.locator('.conversation-sidebar')).toHaveCount(0)
+  await page.getByRole('button', { name: '打开会话列表' }).click()
+  await expect(page.getByRole('navigation', { name: '会话列表', exact: true })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.locator('.conversation-list-drawer')).not.toBeVisible()
+  await page.getByRole('button', { name: '打开会话列表' }).click()
+  await page.getByRole('button', { name: '单轮问答', exact: false }).click()
+  await expect(page.locator('.conversation-heading h1')).toHaveText('单轮问答')
+  await expect(page.locator('.conversation-list-drawer')).not.toBeVisible()
+  await page.getByRole('button', { name: '会话设置', exact: true }).click()
+  await page.keyboard.press('Escape')
+  await expect(page.locator('.conversation-settings-drawer')).not.toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 })
 
 test('费用账本：精确小计、未知费用提示与独立查询', async ({ page }) => {
@@ -452,7 +519,7 @@ test('受控接口：完整 SSE、旧证据复核与笔记批准闭环', async (
   await page.getByRole('button', { name: /E1.*验证指南/ }).click()
   await expect(page.getByText('当前原文已更新', { exact: false })).toBeVisible()
   await expect(page.locator('.el-drawer .source-text')).toHaveText('知识与验证')
-  await page.locator('.el-drawer__close-btn').click()
+  await page.getByRole('button', { name: '关闭此对话框', exact: true }).click()
   await page.getByRole('button', { name: '准备保存笔记' }).click()
   await page.getByText('选择本人启用的知识库', { exact: true }).click()
   await page.getByRole('option', { name: '学习资料 · #12' }).click()
@@ -544,7 +611,7 @@ test('受控接口：窄屏导航与问答；USER 隐藏管理员入口', async 
   await page.setViewportSize({ width: 390, height: 844 })
   await mockBackend(page)
   await login(page)
-  await expect(page.getByRole('heading', { name: '带着问题，走进知识。' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '单轮问答', level: 1, exact: true })).toBeVisible()
   await page.screenshot({ path: 'var/screenshots/chat-mobile.png', fullPage: true })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   await page.getByRole('button', { name: '打开导航' }).click()
@@ -646,7 +713,6 @@ test('新版会话：冲突后核对历史、新版本手动提问、受限内�
     })
   })
   await login(page)
-  await page.locator('.session-panel > summary').click()
   await page.getByLabel('新会话标题').fill('备份规则')
   await page.getByRole('button', { name: '新建会话', exact: true }).click()
   await expect(page.locator('.session-panel')).toContainText('会话 #701 · 版本 1')
