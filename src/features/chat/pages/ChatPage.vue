@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onScopeDispose, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { Promotion, Collection, Document, Close } from '@element-plus/icons-vue'
+import { Promotion, Collection, Document, Close, MagicStick } from '@element-plus/icons-vue'
 import { useAuth } from '@/features/auth'
 import { ScopePicker, SourceDrawer, OwnBaseSelect, useKnowledgeScope } from '@/features/knowledge'
 import { chatApi, dependenciesFrom } from '../api'
@@ -252,7 +252,7 @@ function prepare() {
     title="带着问题，走进知识。"
     description="单轮提问或继续本人会话。会话保存完整历史，模型使用有限上下文；长期偏好需明确保存。"
   /><ScopePicker :admin="auth.user?.role === 'ADMIN'" /><Feedback :error="error" />
-  <details class="panel session-panel" open>
+  <details class="panel session-panel">
     <summary>
       本人会话 ·
       {{
@@ -335,7 +335,9 @@ function prepare() {
     >
   </section>
   <section v-if="!messages.length" class="chat-welcome">
-    <div class="welcome-symbol"><span>✳</span></div>
+    <div class="welcome-symbol">
+      <el-icon aria-hidden="true"><MagicStick /></el-icon>
+    </div>
     <h2>你的资料里，藏着哪些答案？</h2>
     <p class="muted">从一个问题开始。回答会附上后端提供的证据，方便回到原文核对。</p>
     <div class="suggestion-grid">

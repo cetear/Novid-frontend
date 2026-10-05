@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { tasksApi } from '../api'
 import { taskActions, isTaskActive } from '../model'
@@ -14,12 +14,17 @@ import PageHeader from '@/shared/ui/PageHeader.vue'
 import Feedback from '@/shared/ui/Feedback.vue'
 import StatusBadge from '@/shared/ui/StatusBadge.vue'
 import MarkdownView from '@/shared/ui/MarkdownView.vue'
+import FeePanel from '@/features/fees/components/FeePanel.vue'
+import TaskMedia from '../components/TaskMedia.vue'
 const route = useRoute(),
   known = useKnownTasks(),
   task = ref<TaskSnapshot | null>(
     known.created?.taskId === Number(route.params.id) ? known.created : null,
   ),
   report = ref('')
+const isMedia = computed(
+  () => !!task.value && ['NOTES_PPT', 'NOTES_VIDEO'].includes(task.value.taskType),
+)
 const plan = ref<TaskPlanSnapshot | null>(null),
   planChecked = ref(false)
 const { busy, error, notice, run } = useAction()
@@ -113,7 +118,7 @@ function readReport(download = false) {
 <template>
   <PageHeader
     eyebrow="REPORT TASK"
-    :title="'报告任务 #' + route.params.id"
+    :title="(isMedia ? '媒体任务 #' : '报告任务 #') + route.params.id"
     description="任务状态来自服务端；暂停、取消不保证中止已经发出的远程模型调用。"
     ><el-button :loading="busy" @click="refresh">刷新状态</el-button></PageHeader
   ><Feedback :error="error" :notice="notice" /><template v-if="task"
@@ -125,7 +130,11 @@ function readReport(download = false) {
               ? '常见问题 FAQ'
               : task.taskType === 'RESEARCH_REPORT'
                 ? '研究报告'
-                : task.taskType
+                : task.taskType === 'NOTES_PPT'
+                  ? '演示文稿'
+                  : task.taskType === 'NOTES_VIDEO'
+                    ? '教学视频'
+                    : task.taskType
           }}
         </h2>
         <StatusBadge :status="task.status" />
@@ -204,7 +213,10 @@ function readReport(download = false) {
           ><template #reference
             ><el-button type="danger" plain :disabled="busy">取消任务</el-button></template
           ></el-popconfirm
-        ><template v-if="['SUCCEEDED', 'PARTIAL'].includes(task.status) && task.artifactId !== null"
+        ><template
+          v-if="
+            !isMedia && ['SUCCEEDED', 'PARTIAL'].includes(task.status) && task.artifactId !== null
+          "
           ><el-button type="primary" :loading="busy" @click="readReport()">核验并预览报告</el-button
           ><el-button :disabled="busy" @click="readReport(true)">下载 Markdown</el-button></template
         ><RouterLink v-if="task.status === 'FAILED'" to="/tasks">明确重新创建任务 →</RouterLink>
@@ -215,6 +227,8 @@ function readReport(download = false) {
       </div>
       <p class="muted small">可复制当前页面地址保存任务 ID。关闭页面停止观察，不等于取消任务。</p>
     </div>
+    <TaskMedia v-if="isMedia" :task="task" @changed="refresh" />
+    <FeePanel kind="tasks" :resource-id="task.taskId" />
     <section class="panel">
       <h3>阅读覆盖</h3>
       <p v-if="!task.coverage?.length" class="muted">
@@ -241,7 +255,7 @@ function readReport(download = false) {
       </div>
       <p class="muted small">阅读完成不代表回答效果评分通过。</p>
     </section>
-    <section class="panel">
+    <section v-if="!isMedia" class="panel">
       <div class="section-title">
         <h3>受限研究计划</h3>
         <el-button :loading="busy" @click="readPlan">查询计划</el-button>

@@ -154,6 +154,37 @@ export function createTransport(options: TransportOptions) {
         return readLimited(r, 10 * 1024 * 1024)
       })
     },
+    binary(path: string, allowedMimes: readonly string[], request: RequestOptions = {}) {
+      return withResponse(path, request, allowedMimes.join(', '), async (r) => {
+        const mime = r.headers.get('content-type')?.split(';')[0]?.trim() ?? ''
+        if (!allowedMimes.includes(mime))
+          throw new ApiError('附件类型不符合契约', 0, 'INVALID_RESPONSE')
+        const max = 200 * 1024 * 1024
+        if (Number(r.headers.get('content-length')) > max)
+          throw new ApiError('附件超过 200 MB 下载上限', 0, 'RESPONSE_TOO_LARGE')
+        if (!r.body) throw new ApiError('附件内容为空', 0, 'INVALID_RESPONSE')
+        const reader = r.body.getReader(),
+          chunks: Uint8Array<ArrayBuffer>[] = []
+        let size = 0
+        try {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            size += value.byteLength
+            if (size > max) throw new ApiError('附件超过 200 MB 下载上限', 0, 'RESPONSE_TOO_LARGE')
+            chunks.push(new Uint8Array(value))
+          }
+          return {
+            blob: new Blob(chunks, { type: mime }),
+            checksum: r.headers.get('x-artifact-checksum'),
+            revision: r.headers.get('x-artifact-revision'),
+          }
+        } finally {
+          await reader.cancel().catch(() => {})
+          reader.releaseLock()
+        }
+      })
+    },
     stream<T>(path: string, request: RequestOptions, consume: (r: Response) => Promise<T>) {
       return withResponse(path, request, 'text/event-stream', async (r) => {
         if (!r.headers.get('content-type')?.includes('text/event-stream') || !r.body)

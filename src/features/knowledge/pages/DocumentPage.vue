@@ -20,6 +20,7 @@ import PageHeader from '@/shared/ui/PageHeader.vue'
 import Feedback from '@/shared/ui/Feedback.vue'
 import PageStepper from '@/shared/ui/PageStepper.vue'
 import StatusBadge from '@/shared/ui/StatusBadge.vue'
+import FeePanel from '@/features/fees/components/FeePanel.vue'
 const auth = useAuth(),
   route = useRoute(),
   router = useRouter(),
@@ -587,4 +588,5 @@ function locate(start: number, end: number) {
       ></template
     >
   </el-dialog>
+  <FeePanel v-if="owned && ingestion" kind="ingestions" :resource-id="ingestion.ingestionId" />
 </template>

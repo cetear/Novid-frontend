@@ -9,6 +9,7 @@ import { dateTime } from '@/shared/lib/format'
 import PageHeader from '@/shared/ui/PageHeader.vue'
 import Feedback from '@/shared/ui/Feedback.vue'
 import StatusBadge from '@/shared/ui/StatusBadge.vue'
+import FeePanel from '@/features/fees/components/FeePanel.vue'
 const route = useRoute(),
   { data, loading, loadError, load } = useLoad<TraceGraph>()
 function refresh() {
@@ -52,4 +53,5 @@ watch(() => route.params.traceId, refresh, { immediate: true })
     </div>
   </div>
   <RunGraph v-if="data" :key="data.run.traceId" :graph="data" />
+  <FeePanel kind="runs" :resource-id="String(route.params.traceId)" />
 </template>

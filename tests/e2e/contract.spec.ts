@@ -2,6 +2,8 @@ import { test, expect } from '@playwright/test'
 import { mockBackend, login } from './mockBackend'
 import { session, modernTask, plan, graph, ingestion, sectionPage } from '../stageFixtures'
 import { ai } from '../fixtures'
+import { fee, mediaPreview, presentation, videoCapability } from '../mediaFixtures'
+import { createHash } from 'node:crypto'
 test('受控接口：凭证失败、登录、刷新清除内存身份', async ({ page }) => {
   const errors: string[] = []
   page.on('pageerror', (e) => errors.push(e.message))
@@ -20,6 +22,409 @@ test('受控接口：凭证失败、登录、刷新清除内存身份', async ({
   await page.reload()
   await expect(page).toHaveURL(/\/login/)
   expect(errors).toEqual([])
+})
+
+test('费用账本：精确小计、未知费用提示与独立查询', async ({ page }) => {
+  await mockBackend(page)
+  await page.route('**/api/v1/tasks/51/fees', (route) =>
+    route.fulfill({ contentType: 'application/json', body: JSON.stringify(fee) }),
+  )
+  await login(page)
+  await page.getByRole('link', { name: '费用记录', exact: true }).click()
+  await page.getByLabel('费用资源标识').fill('51')
+  await page.getByRole('button', { name: '查询费用', exact: true }).click()
+  await expect(page.locator('.fee-panel')).toContainText('0.12500001')
+  await expect(page.locator('.fee-panel')).toContainText('不能视为零费用')
+  await expect(page).toHaveURL(/kind=tasks&id=51/)
+  await page.screenshot({ path: 'var/screenshots/fees-desktop.png', fullPage: true })
+})
+
+test('媒体预览：审批与本人验收分开、PNG Bearer读取、编辑撤下旧附件', async ({ page }) => {
+  const state = await mockBackend(page)
+  const snapshot = {
+    ...modernTask,
+    taskType: 'NOTES_PPT',
+    status: 'WAITING_APPROVAL',
+    artifactId: null,
+  }
+  let preview = structuredClone(mediaPreview),
+    bundle: typeof presentation | null = null,
+    denied = false
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aOukAAAAASUVORK5CYII=',
+    'base64',
+  )
+  const checksum = createHash('sha256').update(png).digest('hex')
+  const decisions: unknown[] = [],
+    reviews: unknown[] = []
+  await page.route('**/api/v1/tasks/51**', async (route) => {
+    const path = new URL(route.request().url()).pathname
+    const send = (value: unknown, status = 200) =>
+      route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) })
+    if (path.endsWith('/fees')) return send(fee)
+    if (path.endsWith('/preview')) {
+      if (route.request().method() === 'PATCH') {
+        expect(route.request().postDataJSON().previewVersion).toBe(preview.previewVersion)
+        preview = {
+          ...preview,
+          previewVersion: preview.previewVersion + 1,
+          estimatedAmount: null,
+          units: route.request().postDataJSON().units,
+        }
+        snapshot.stateVersion++
+        snapshot.status = 'WAITING_APPROVAL'
+        bundle = null
+      }
+      return send(preview)
+    }
+    if (path.endsWith('/presentation-check'))
+      return bundle ? send(bundle) : route.fulfill({ status: 204 })
+    if (path.endsWith('/media-operations')) return send([])
+    if (path.endsWith('/media-review')) {
+      reviews.push(route.request().postDataJSON())
+      return route.fulfill({ status: 204 })
+    }
+    return send(snapshot)
+  })
+  await page.route('**/api/v1/media/approvals/*/decision', (route) => {
+    decisions.push(route.request().postDataJSON())
+    snapshot.status = 'WAITING_MEDIA_REVIEW'
+    snapshot.stateVersion++
+    bundle = structuredClone(presentation)
+    bundle.pages[0]!.preview.checksum = checksum
+    return route.fulfill({ contentType: 'application/json', body: JSON.stringify(preview) })
+  })
+  await page.route('**/api/v1/artifacts/92', (route) => {
+    expect(route.request().headers().authorization).toBe('Bearer mock-opaque-token')
+    expect(route.request().url()).not.toContain('token')
+    return denied
+      ? route.fulfill({
+          status: 403,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            code: 'ACCESS_DENIED',
+            message: '产物当前不可访问',
+            retryable: false,
+          }),
+        })
+      : route.fulfill({
+          contentType: 'image/png',
+          headers: { 'x-artifact-checksum': checksum },
+          body: png,
+        })
+  })
+  await login(page)
+  await page.getByRole('link', { name: '报告任务', exact: true }).click()
+  await page.getByLabel('已知任务 ID').fill('51')
+  await page.getByRole('button', { name: '打开', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '理解水循环' })).toBeVisible()
+  expect(decisions).toHaveLength(0)
+  await page.getByRole('button', { name: '批准当前版本与费用' }).click()
+  await page.getByRole('button', { name: '确定', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '本人质量验收' })).toBeVisible()
+  expect(decisions).toEqual([{ approved: true, taskId: 51 }])
+  expect(reviews).toHaveLength(0)
+  await page.getByRole('button', { name: '核验第 1 页' }).click()
+  await expect(page.locator('.page-preview img')).toBeVisible()
+  await expect(page.locator('.page-preview img')).toHaveAttribute('src', /^blob:/)
+  await page.screenshot({ path: 'var/screenshots/presentation-desktop.png', fullPage: true })
+  await page.getByRole('button', { name: '编辑内容并重新审批' }).click()
+  await page.getByRole('dialog').getByRole('textbox').nth(1).fill('修改后的凝结解释')
+  await page.getByRole('button', { name: '保存新版预览' }).click()
+  await expect(page.locator('.page-preview img')).toHaveCount(0)
+  await expect(page.locator('.media-workbench')).toContainText('预览 v2')
+  await expect(page.getByRole('button', { name: '下载候选 PPTX' })).toHaveCount(0)
+  snapshot.status = 'WAITING_MEDIA_REVIEW'
+  snapshot.stateVersion++
+  bundle = structuredClone(presentation)
+  bundle.check.previewVersion = 2
+  bundle.pages[0]!.preview.checksum = checksum
+  await page.getByRole('button', { name: '刷新状态' }).click()
+  denied = true
+  await page.getByRole('button', { name: '核验第 1 页' }).click()
+  await expect(page.locator('.media-workbench')).toContainText('产物当前不可访问')
+  await expect(page.getByRole('heading', { name: '理解水循环' })).toHaveCount(0)
+  expect(state.requests.filter((r) => r.startsWith('POST /tasks'))).toHaveLength(0)
+})
+
+test('运营审计：窗口计数、币种聚合与 afterId 游标', async ({ page }) => {
+  await mockBackend(page, { admin: true })
+  const cursors: string[] = []
+  await page.route('**/api/v1/admin/metrics?*', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        runs: 12,
+        failedRuns: 2,
+        incompleteRuns: 1,
+        queuedTasks: 3,
+        pendingOutbox: 0,
+        accessEvents: 5,
+        queryCacheHits: 4,
+        queryCacheMisses: 9,
+        queryCacheEntries: 2,
+      }),
+    }),
+  )
+  await page.route('**/api/v1/admin/fees?*', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify([
+        {
+          currency: 'CNY',
+          attempts: 3,
+          unknownAttempts: 1,
+          pendingAttempts: 1,
+          simulatedAttempts: 0,
+          estimatedAmount: '0.12500001',
+          reservedAmount: '2.00000000',
+        },
+      ]),
+    }),
+  )
+  await page.route('**/api/v1/admin/access-audit?*', (route) => {
+    const cursor = new URL(route.request().url()).searchParams.get('afterId') ?? ''
+    cursors.push(cursor)
+    return route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(
+        cursor === '0'
+          ? [
+              {
+                id: 17,
+                actorUserId: 7,
+                action: 'SEARCH_CACHE_HIT',
+                resourceId: null,
+                scopeMode: 'SELECTED',
+                permissionVersion: 1,
+                knowledgeEpoch: 2,
+                resultCount: 4,
+                outcome: 'DELIVERABLE',
+                createdAt: '2026-10-05T00:00:00Z',
+                knowledgeBaseIds: [12],
+                ownerUserId: null,
+                resourceIds: [101],
+              },
+            ]
+          : [],
+      ),
+    })
+  })
+  await login(page)
+  await page.getByRole('link', { name: '运营与审计', exact: true }).click()
+  await expect(page.locator('.metrics-grid')).toContainText('12')
+  await expect(page.getByText('SEARCH_CACHE_HIT', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '读取后续' }).click()
+  await expect(page.locator('.page-stepper')).toContainText('游标 17')
+  await expect(page.getByRole('button', { name: '读取后续' })).toBeDisabled()
+  expect(cursors).toEqual(['0', '17'])
+  await page.getByRole('button', { name: '上一页' }).click()
+  await expect(page.getByText('SEARCH_CACHE_HIT', { exact: true })).toBeVisible()
+  await page.screenshot({ path: 'var/screenshots/admin-operations.png', fullPage: true })
+})
+
+test('视频规划：真实目录、单片 API 参数、有台词不能无声、未知提交不能编辑重购', async ({
+  page,
+}) => {
+  await mockBackend(page)
+  const snapshot = {
+    ...modernTask,
+    taskType: 'NOTES_VIDEO',
+    status: 'WAITING_APPROVAL',
+    artifactId: null,
+  }
+  let preview = {
+    ...structuredClone(mediaPreview),
+    storyboard: {
+      storyboardVersion: 1,
+      hash: 'storyboard',
+      aspectRatio: '16:9',
+      mappingRule: 'registered',
+      durationTiers: [5, 10],
+      shots: [
+        {
+          shotId: 'slide1',
+          narration: '水汽遇冷，凝成水滴。',
+          visualPrompt: '凝结现象',
+          motionPrompt: '缓慢展示',
+          generationType: 'TEXT_TO_VIDEO',
+          referenceAssetIds: [],
+          sourceRefs: ['D101v1'],
+          estimatedDurationMs: 5000,
+          maximumDurationSeconds: 10,
+          video: {
+            capability: videoCapability,
+            resolution: '720p',
+            audioMode: 'NATIVE',
+            seconds: 5,
+            reason: '规划建议',
+          },
+        },
+      ],
+    },
+  }
+  const creates: unknown[] = [],
+    selections: unknown[] = []
+  await page.route('**/api/v1/media/catalogs', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(
+        ['CHARACTER', 'VOICE', 'SCENE'].map((kind) => ({
+          id: kind.toLowerCase(),
+          kind,
+          version: 1,
+          label:
+            kind === 'CHARACTER' ? '教学人物甲' : kind === 'VOICE' ? '讲解声音甲' : '教学场景甲',
+          enabled: true,
+          provider: 'registered',
+          mappingKind: 'PROMPT',
+          mappingValue: 'registered hint',
+          providerMappings: {},
+        })),
+      ),
+    }),
+  )
+  await page.route('**/api/v1/media/video-capabilities', (route) =>
+    route.fulfill({ contentType: 'application/json', body: JSON.stringify([videoCapability]) }),
+  )
+  await page.route('**/api/v1/tasks', (route) => {
+    creates.push(route.request().postDataJSON())
+    return route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify(snapshot),
+    })
+  })
+  await page.route('**/api/v1/tasks/51**', (route) => {
+    const path = new URL(route.request().url()).pathname
+    const send = (value: unknown) =>
+      route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) })
+    if (path.endsWith('/fees')) return send(fee)
+    if (path.endsWith('/preview')) return send(preview)
+    if (path.endsWith('/video-selection')) {
+      selections.push(route.request().postDataJSON())
+      preview = { ...preview, previewVersion: preview.previewVersion + 1, estimatedAmount: null }
+      snapshot.stateVersion++
+      return send(preview)
+    }
+    if (path.endsWith('/media-operations'))
+      return send(
+        snapshot.status === 'NEEDS_RECONCILIATION'
+          ? [
+              {
+                operationId: 'original-unknown',
+                taskId: 51,
+                previewVersion: preview.previewVersion,
+                unitId: 'slide1',
+                capability: 'VIDEO_GENERATION',
+                state: 'UNKNOWN',
+                providerJobId: null,
+                providerStatus: null,
+                pollCount: 0,
+                lastPollAt: null,
+                nextPollAt: null,
+                deadline: null,
+                errorCode: 'MEDIA_SUBMISSION_UNKNOWN',
+                assetId: null,
+                costStatus: 'UNKNOWN',
+              },
+            ]
+          : [],
+      )
+    return send(snapshot)
+  })
+  await login(page)
+  await page.getByRole('link', { name: '报告任务', exact: true }).click()
+  await page.getByText('教学视频', { exact: true }).click()
+  await expect(page.getByRole('radio', { name: '教学视频', exact: true })).toBeChecked()
+  await expect(page.locator('.media-options')).toBeVisible()
+  for (const [label, option] of [
+    ['教学人物', '教学人物甲'],
+    ['原生声音', '讲解声音甲'],
+    ['视觉场景', '教学场景甲'],
+  ]) {
+    const field = page.locator('.media-options .el-form-item').filter({
+      has: page.getByRole('combobox', { name: label!, exact: true }),
+    })
+    await field.locator('.el-select__wrapper').click()
+    await page.getByRole('option', { name: new RegExp(option!) }).click()
+  }
+  await page.getByLabel('主题', { exact: true }).fill('演示凝结现象')
+  await page.locator('.document-choice .el-checkbox').click()
+  await page.getByRole('button', { name: '创建规划任务' }).click()
+  expect(creates).toEqual([
+    expect.objectContaining({
+      taskType: 'NOTES_VIDEO',
+      strategy: 'PLANNED',
+      videoOptions: {
+        characterId: 'character',
+        voiceId: 'voice',
+        sceneId: 'scene',
+        seconds: 15,
+        maximumAmount: '20',
+        shotCount: 3,
+        burnSubtitles: false,
+      },
+    }),
+  ])
+  await expect(page.locator('.storyboard-list')).toContainText('原生有声')
+  await page.getByText('整片 API 与声音规格', { exact: true }).click()
+  await page.getByRole('button', { name: '读取登记能力' }).click()
+  await page.getByLabel('整片 API', { exact: true }).selectOption('video-native')
+  await page.getByLabel('分辨率', { exact: true }).selectOption('720p')
+  await page.getByLabel('声音', { exact: true }).selectOption('NONE')
+  await page.getByRole('button', { name: '保存选择并重新审批' }).click()
+  await expect(page.locator('.media-workbench')).toContainText('无声模式不能保留台词')
+  expect(selections).toHaveLength(0)
+  await page.getByLabel('声音', { exact: true }).selectOption('NATIVE')
+  await page.getByRole('button', { name: '保存选择并重新审批' }).click()
+  await expect(page.locator('.media-workbench')).toContainText('预览 v2')
+  expect(selections).toEqual([
+    {
+      previewVersion: 1,
+      shots: [
+        {
+          shotId: 'slide1',
+          profileId: 'video-native',
+          resolution: '720p',
+          audioMode: 'NATIVE',
+          seconds: 5,
+          reason: '本人选择整片统一 API 与音频规格',
+        },
+      ],
+    },
+  ])
+  snapshot.status = 'NEEDS_RECONCILIATION'
+  snapshot.stateVersion++
+  await page.getByRole('button', { name: '刷新状态' }).click()
+  await expect(page.getByRole('button', { name: '编辑内容并重新审批' })).toBeDisabled()
+  await expect(page.locator('.media-workbench')).toContainText('不能重新购买')
+})
+
+test('重设计：375px、横屏与减少动效下无溢出，移动导航支持 Escape', async ({ page }) => {
+  await mockBackend(page)
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await login(page)
+  for (const viewport of [
+    { width: 375, height: 812 },
+    { width: 812, height: 375 },
+    { width: 768, height: 1024 },
+    { width: 1440, height: 1000 },
+  ]) {
+    await page.setViewportSize(viewport)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  }
+  await page.setViewportSize({ width: 375, height: 812 })
+  await page.getByRole('button', { name: '打开导航' }).click()
+  await expect(page.locator('.mobile-navigation')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.locator('.mobile-navigation')).not.toBeVisible()
+  await page.getByRole('button', { name: '打开导航' }).click()
+  await page.getByRole('link', { name: '报告任务', exact: true }).click()
+  await page.getByText('演示文稿', { exact: true }).click()
+  await expect(page.getByLabel('演示文稿总页数')).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.screenshot({ path: 'var/screenshots/tasks-mobile.png', fullPage: true })
 })
 test('受控接口：首次改密，原密码 401 保持身份，成功后重新登录', async ({ page }) => {
   const state = await mockBackend(page, { mustChange: true })
@@ -241,6 +646,7 @@ test('新版会话：冲突后核对历史、新版本手动提问、受限内�
     })
   })
   await login(page)
+  await page.locator('.session-panel > summary').click()
   await page.getByLabel('新会话标题').fill('备份规则')
   await page.getByRole('button', { name: '新建会话', exact: true }).click()
   await expect(page.locator('.session-panel')).toContainText('会话 #701 · 版本 1')

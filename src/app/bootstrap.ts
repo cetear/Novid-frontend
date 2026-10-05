@@ -8,6 +8,7 @@ import { createTransport, configureTransport } from '@/shared/api/transport'
 import { router } from './router'
 import App from './App.vue'
 import '@/shared/styles/main.css'
+import '@/shared/styles/studio.css'
 export function bootstrap() {
   document.documentElement.dataset.density = localStorage.getItem('novid-display') || 'spacious'
   const app = createApp(App),

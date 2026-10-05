@@ -39,6 +39,12 @@ export const router = createRouter({
     { path: '/runs', component: () => import('@/features/runs/pages/RunsPage.vue') },
     { path: '/run-inspector.html', redirect: '/runs' },
     { path: '/runs/:traceId', component: () => import('@/features/runs/pages/RunPage.vue') },
+    { path: '/fees', component: () => import('@/features/fees/pages/FeesPage.vue') },
+    {
+      path: '/admin/operations',
+      component: () => import('@/features/admin/pages/OperationsPage.vue'),
+      meta: { admin: true },
+    },
     {
       path: '/admin/users',
       component: () => import('@/features/admin/pages/UsersPage.vue'),
