@@ -2,7 +2,6 @@ import type {
   SessionSnapshot,
   IngestionMetadata,
   SectionPage,
-  TaskPlanSnapshot,
   TraceGraph,
   TaskSnapshot,
 } from '@/shared/api/contracts/backend'
@@ -66,44 +65,6 @@ export const sectionPage: SectionPage = {
   remainingEndOffset: 20,
   tokenCount: 15,
   countSource: 'ESTIMATED_UTF8_BYTES',
-}
-export const plan: TaskPlanSnapshot = {
-  plan: {
-    version: 'plan-s05-v1',
-    steps: [
-      {
-        stepId: 'research',
-        action: 'research',
-        agentId: 'ResearchWorker',
-        taskType: 'RESEARCH_REPORT',
-        dependsOn: [],
-        input: { focus: '核对备份规则' },
-        qualityRequirement: 'SOURCE_GROUNDED',
-      },
-      {
-        stepId: 'analysis',
-        action: 'analysis',
-        agentId: 'AnalysisWorker',
-        taskType: 'RESEARCH_REPORT',
-        dependsOn: [],
-        input: { focus: '分析资料' },
-        qualityRequirement: 'SOURCE_GROUNDED',
-      },
-      {
-        stepId: 'report',
-        action: 'report',
-        agentId: 'ReportWriter',
-        taskType: 'RESEARCH_REPORT',
-        dependsOn: ['research', 'analysis'],
-        input: { focus: '整理报告' },
-        qualityRequirement: 'SOURCE_GROUNDED',
-      },
-    ],
-  },
-  planHash: 'test-plan-hash',
-  agentVersion: 's05-v1',
-  modelId: 'primary',
-  policyVersion: 'v1',
 }
 const node = {
   spanId: 'root',

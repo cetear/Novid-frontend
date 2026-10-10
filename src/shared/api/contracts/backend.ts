@@ -103,7 +103,8 @@ export const evidenceSchema = z.object({
   evidenceId: z.string(),
   document: documentSchema,
   processingRevision: version,
-  sectionId: z.string(),
+  // Raw document tools and inherited history may cite offsets without a section.
+  sectionId: z.string().nullable(),
   headingPath: z.string(),
   matchedChunkIds: z.array(z.string()),
   includedChunkIds: z.array(z.string()),
@@ -309,26 +310,6 @@ export const ingestionSchema = z.object({
     })
     .nullable(),
 })
-export const planSchema = z.object({
-  plan: z.object({
-    version: z.string(),
-    steps: z.array(
-      z.object({
-        stepId: z.string(),
-        action: z.string(),
-        agentId: z.string(),
-        taskType: z.string(),
-        dependsOn: z.array(z.string()),
-        input: z.object({ focus: z.string() }),
-        qualityRequirement: z.string(),
-      }),
-    ),
-  }),
-  planHash: z.string(),
-  agentVersion: z.string(),
-  modelId: z.string(),
-  policyVersion: z.string(),
-})
 export const toolSchema = z.object({
   name: z.string(),
   version: z.string(),
@@ -340,6 +321,11 @@ export const toolSchema = z.object({
   enabled: z.boolean(),
   timeoutSeconds: count,
   retryable: z.boolean(),
+})
+export const tracePayloadSchema = z.object({
+  content: z.string(),
+  truncated: z.boolean(),
+  originalChars: count,
 })
 export const spanSchema = z.object({
   spanId: z.string(),
@@ -364,6 +350,17 @@ export const spanSchema = z.object({
   outputTokens: count.nullable(),
   usageSource: z.string().nullable(),
   toolCallHash: z.string().nullable(),
+  input: tracePayloadSchema.nullish(),
+  output: tracePayloadSchema.nullish(),
+  payloadSources: z
+    .array(
+      z.object({
+        knowledgeBaseId: id,
+        documentId: id,
+        documentVersion: count,
+      }),
+    )
+    .optional(),
 })
 export const graphSchema = z.object({
   run: traceSchema,
@@ -402,7 +399,6 @@ export type SessionSnapshot = z.infer<typeof sessionSchema>
 export type SessionMessage = z.infer<typeof sessionMessageSchema>
 export type SectionPage = z.infer<typeof sectionPageSchema>
 export type IngestionMetadata = z.infer<typeof ingestionSchema>
-export type TaskPlanSnapshot = z.infer<typeof planSchema>
 export type TraceGraph = z.infer<typeof graphSchema>
 export type TraceSpan = z.infer<typeof spanSchema>
 export interface ChatOptions {

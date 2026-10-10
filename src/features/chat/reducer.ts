@@ -39,12 +39,15 @@ export function createChatReducer(
         return fail()
       }
       if (name === 'error') {
-        const e = z.object({ code: z.string(), message: z.string() }).safeParse(payload)
+        const e = z
+          .object({ code: z.string(), message: z.string(), retryable: z.boolean().optional() })
+          .safeParse(payload)
         if (!e.success) return fail()
         throw new ApiError(
-          e.data.code === 'INTERNAL_ERROR' ? '服务暂不可用' : e.data.message.slice(0, 500),
+          e.data.message.slice(0, 500),
           200,
           e.data.code,
+          e.data.retryable === true,
         )
       }
       if (name === 'progress') {

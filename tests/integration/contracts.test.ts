@@ -111,10 +111,10 @@ describe('exact request construction', () => {
   })
   it('creates raw-document task without requiring READY and uses artifactId for reports', async () => {
     response = jsonResponse(task, 202)
-    await tasksApi.create('FAQ', '问题', self, [101], 'task-key')
+    await tasksApi.create('QUIZ_GENERATION', '问题', self, [101], 'task-key')
     expect(calls[0]?.body).toEqual({
-      taskType: 'FAQ',
-      topic: '问题',
+      taskType: 'QUIZ_GENERATION',
+      remarks: '问题',
       scope: self,
       documentIds: [101],
     })

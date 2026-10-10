@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { id, dependencySchema, coverageSchema } from './backend'
+import { contentPlanRefSchema } from './contentPlan'
 
 const count = z.number().int().nonnegative().refine(Number.isSafeInteger)
 const time = z.iso.datetime({ offset: true })
@@ -39,11 +40,11 @@ export const auditSchema = z.object({
   actorUserId: id,
   action: z.string(),
   resourceId: id.nullable(),
-  scopeMode: z.string(),
+  scopeMode: z.string().nullable(),
   permissionVersion: count.nullable(),
   knowledgeEpoch: count.nullable(),
   resultCount: count.nullable(),
-  outcome: z.string(),
+  outcome: z.string().nullable(),
   createdAt: time,
   knowledgeBaseIds: z.array(id).nullable().optional(),
   ownerUserId: id.nullable().optional(),
@@ -125,6 +126,7 @@ const imageSourceSchema = z.object({
   retrievedAt: time,
 })
 export const previewSchema = z.object({
+  contentPlan: contentPlanRefSchema.optional(),
   taskId: id,
   previewVersion: id,
   planVersion: id,
@@ -280,9 +282,9 @@ export type MediaUnit = z.infer<typeof unitSchema>
 export type VideoCapability = z.infer<typeof capabilitySchema>
 export type CatalogItem = z.infer<typeof catalogSchema>
 export type PresentationBundle = z.infer<typeof presentationSchema>
-export type TaskType = 'FAQ' | 'RESEARCH_REPORT' | 'NOTES_PPT' | 'NOTES_VIDEO'
+export type TaskType = 'QUIZ_GENERATION' | 'KNOWLEDGE_COMPILATION' | 'NOTES_PPT' | 'NOTES_VIDEO'
 export interface PresentationOptions {
-  pageCount: number
+  pageCount?: number
   themeId: 'default'
   maximumAmount: string
   imagePolicy: 'MIXED' | 'CONCEPT' | 'FACTUAL'

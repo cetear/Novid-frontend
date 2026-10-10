@@ -21,6 +21,26 @@ export function duration(node: TraceSpan) {
   const ms = Date.parse(node.endedAt) - Date.parse(node.startedAt)
   return Number.isFinite(ms) && ms >= 0 ? ms : null
 }
+export function timelineGroups(nodes: TraceSpan[]) {
+  const groups = new Map<
+    string,
+    { category: string; nodes: TraceSpan[]; totalDuration: number | null; unknownCount: number }
+  >()
+  for (const node of [...nodes].sort((a, b) => a.sequence - b.sequence)) {
+    // Workflow agents use names such as read_<sliceId> and extract_<sliceId>_<offset>.
+    const category = node.type === 'AGENT' ? node.name.split('_')[0] || node.type : node.type
+    let group = groups.get(category)
+    if (!group) {
+      group = { category, nodes: [], totalDuration: null, unknownCount: 0 }
+      groups.set(category, group)
+    }
+    group.nodes.push(node)
+    const ms = duration(node)
+    if (ms === null) group.unknownCount++
+    else group.totalDuration = (group.totalDuration ?? 0) + ms
+  }
+  return [...groups.values()]
+}
 export function knownUsage(graph: TraceGraph) {
   const parents = new Set(graph.nodes.map((node) => node.parentSpanId).filter(Boolean))
   const leaves = graph.nodes.filter(

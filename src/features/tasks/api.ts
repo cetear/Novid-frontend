@@ -1,35 +1,84 @@
 import { http } from '@/shared/api/transport'
-import { taskSchema, planSchema, type ScopeRequest } from '@/shared/api/contracts/backend'
+import { taskSchema, type ScopeRequest } from '@/shared/api/contracts/backend'
+import { contentPlanSchema } from '@/shared/api/contracts/contentPlan'
 import { positiveId, requiredText } from '@/shared/lib/validation'
 import type { TaskType, PresentationOptions, VideoOptions } from '@/shared/api/contracts/media'
+import {
+  learningResultSchema,
+  quizOptionsSchema,
+  compilationOptionsSchema,
+  type QuizOptions,
+  type CompilationOptions,
+} from '@/shared/api/contracts/learning'
 export const tasksApi = {
   create(
     taskType: TaskType,
-    topic: string,
+    instructions: string,
     scope: ScopeRequest,
     documentIds: number[],
     key: string,
     strategy?: 'FIXED' | 'PLANNED',
-    media?: { presentationOptions?: PresentationOptions; videoOptions?: VideoOptions },
+    options?: {
+      presentationOptions?: PresentationOptions
+      videoOptions?: VideoOptions
+      quizOptions?: QuizOptions
+      compilationOptions?: CompilationOptions
+    },
   ) {
-    requiredText(topic, 1000, '主题')
-    if (strategy === 'PLANNED' && taskType === 'FAQ') throw new Error('规划策略仅用于研究报告')
+    const instructionsText = instructions.trim()
+    if (taskType === 'NOTES_VIDEO') requiredText(instructionsText, 1000, '主题')
+    else if (instructionsText.length > 1000) throw new Error('备注不能超过 1000 字符')
+    if (
+      !['QUIZ_GENERATION', 'KNOWLEDGE_COMPILATION', 'NOTES_PPT', 'NOTES_VIDEO'].includes(taskType)
+    )
+      throw new Error('WORKFLOW_RETIRED：旧 FAQ／研究报告已停用，请选择学习自测或资料整编')
+    if (taskType !== 'NOTES_VIDEO' && strategy === 'PLANNED')
+      throw new Error('资料任务使用固定流程')
+    const allowedOption = {
+      QUIZ_GENERATION: 'quizOptions',
+      KNOWLEDGE_COMPILATION: 'compilationOptions',
+      NOTES_PPT: 'presentationOptions',
+      NOTES_VIDEO: 'videoOptions',
+    }[taskType]
+    if (Object.keys(options ?? {}).some((key) => key !== allowedOption))
+      throw new Error('不能混传其他任务类型的选项')
+    const quiz =
+      options?.quizOptions === undefined ? undefined : quizOptionsSchema.parse(options.quizOptions)
+    const compilation =
+      options?.compilationOptions === undefined
+        ? undefined
+        : compilationOptionsSchema.parse(options.compilationOptions)
     if (taskType === 'NOTES_PPT' || taskType === 'NOTES_VIDEO') {
-      if (strategy !== 'PLANNED') throw new Error('媒体任务须使用规划策略')
-      const options = taskType === 'NOTES_PPT' ? media?.presentationOptions : media?.videoOptions
+      if (taskType === 'NOTES_VIDEO' && strategy === 'FIXED')
+        throw new Error('视频任务须使用规划策略')
+      const mediaOptions =
+        taskType === 'NOTES_PPT' ? options?.presentationOptions : options?.videoOptions
       if (
-        !options ||
-        !/^\d+(\.\d{1,8})?$/.test(options.maximumAmount) ||
-        Number(options.maximumAmount) <= 0 ||
-        Number(options.maximumAmount) > 30
+        (taskType === 'NOTES_VIDEO' && !mediaOptions) ||
+        (mediaOptions &&
+          (!/^\d+(\.\d{1,8})?$/.test(mediaOptions.maximumAmount) ||
+            Number(mediaOptions.maximumAmount) <= 0 ||
+            Number(mediaOptions.maximumAmount) > 30))
       )
         throw new Error('请填写有效金额上限')
       if (taskType === 'NOTES_PPT') {
-        const ppt = media?.presentationOptions
-        if (!ppt || !Number.isInteger(ppt.pageCount) || ppt.pageCount < 2 || ppt.pageCount > 12)
-          throw new Error('PPT 总页数须为 2～12 页（包含来源页）')
+        const ppt = options?.presentationOptions
+        if (
+          ppt &&
+          ppt.pageCount !== undefined &&
+          (!Number.isInteger(ppt.pageCount) ||
+            ppt.pageCount === 1 ||
+            ppt.pageCount < 0 ||
+            ppt.pageCount > 512)
+        )
+          throw new Error('PPT 总页数须为 0（自动）或 2～512 页（包含来源页）')
+        if (
+          ppt &&
+          (ppt.themeId !== 'default' || !['MIXED', 'CONCEPT', 'FACTUAL'].includes(ppt.imagePolicy))
+        )
+          throw new Error('请核对主题与配图策略')
       } else {
-        const video = media?.videoOptions
+        const video = options?.videoOptions
         if (
           !video ||
           !video.characterId ||
@@ -53,28 +102,61 @@ export const tasksApi = {
       key,
       json: {
         taskType,
-        topic,
+        ...(taskType === 'NOTES_VIDEO'
+          ? { topic: instructionsText }
+          : instructionsText
+            ? { remarks: instructionsText }
+            : {}),
         scope,
         documentIds: documentIds.map(positiveId),
         ...(strategy ? { strategy } : {}),
-        ...(taskType === 'NOTES_PPT' ? { presentationOptions: media?.presentationOptions } : {}),
-        ...(taskType === 'NOTES_VIDEO' ? { videoOptions: media?.videoOptions } : {}),
+        ...(quiz ? { quizOptions: quiz } : {}),
+        ...(compilation ? { compilationOptions: compilation } : {}),
+        ...(taskType === 'NOTES_PPT' && options?.presentationOptions
+          ? {
+              presentationOptions: {
+                pageCount: options!.presentationOptions!.pageCount,
+                themeId: options!.presentationOptions!.themeId,
+                maximumAmount: Number(options!.presentationOptions!.maximumAmount),
+                imagePolicy: options!.presentationOptions!.imagePolicy,
+              },
+            }
+          : {}),
+        ...(taskType === 'NOTES_VIDEO'
+          ? {
+              videoOptions: {
+                characterId: options!.videoOptions!.characterId,
+                voiceId: options!.videoOptions!.voiceId,
+                sceneId: options!.videoOptions!.sceneId,
+                seconds: options!.videoOptions!.seconds,
+                maximumAmount: Number(options!.videoOptions!.maximumAmount),
+                shotCount: options!.videoOptions!.shotCount,
+                burnSubtitles: options!.videoOptions!.burnSubtitles,
+              },
+            }
+          : {}),
       },
     })
   },
   get(id: number, signal?: AbortSignal) {
     return http().json(`/tasks/${positiveId(id)}`, taskSchema, { signal })
   },
-  plan(id: number, signal?: AbortSignal) {
-    return http().optionalJson(`/tasks/${positiveId(id)}/plan`, planSchema, { signal })
+  contentPlan(id: number, signal?: AbortSignal) {
+    return http().optionalJson(`/tasks/${positiveId(id)}/content-plan`, contentPlanSchema, {
+      signal,
+    })
   },
-  action(id: number, action: 'pause' | 'resume' | 'cancel') {
+  result(id: number, signal?: AbortSignal) {
+    return http().json(`/tasks/${positiveId(id)}/result`, learningResultSchema, { signal })
+  },
+  action(id: number, action: 'pause' | 'resume' | 'cancel', signal?: AbortSignal) {
     return http().json(`/tasks/${positiveId(id)}/actions`, taskSchema, {
       method: 'POST',
       json: { action },
+      signal,
     })
   },
-  artifact(id: number) {
-    return http().text(`/artifacts/${positiveId(id)}`, 'text/markdown')
+  artifact(id: number, signal?: AbortSignal) {
+    return http().text(`/artifacts/${positiveId(id)}`, 'text/markdown', { signal })
   },
 }

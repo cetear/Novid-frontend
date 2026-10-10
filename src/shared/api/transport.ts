@@ -42,6 +42,8 @@ export function createTransport(options: TransportOptions) {
     request.signal?.addEventListener('abort', cancel, { once: true })
     active.add(controller)
     const timer = setTimeout(cancel, request.timeout ?? 90_000)
+    let requestId: string | null = null
+    let responseStatus = 0
     try {
       const headers = new Headers({ Accept: accept })
       if (request.auth !== 'login' && identity.token)
@@ -61,6 +63,8 @@ export function createTransport(options: TransportOptions) {
         body:
           request.body ?? (request.json === undefined ? undefined : JSON.stringify(request.json)),
       })
+      requestId = response.headers.get('x-request-id')
+      responseStatus = response.status
       assertCurrent(identity.epoch)
       if (!response.ok) {
         let code = 'HTTP_ERROR',
@@ -72,9 +76,7 @@ export function createTransport(options: TransportOptions) {
             if (detail && typeof detail === 'object') {
               const d = detail as Record<string, unknown>
               if (typeof d.code === 'string') code = d.code.slice(0, 100)
-              // Internal failures may contain diagnostic details; never render a stack trace.
-              if (response.status < 500 && typeof d.message === 'string')
-                message = d.message.slice(0, 500)
+              if (typeof d.message === 'string') message = d.message.slice(0, 500)
               retryable = d.retryable === true
             }
           } catch {
@@ -97,6 +99,7 @@ export function createTransport(options: TransportOptions) {
           code,
           retryable,
           Number.isFinite(seconds) ? Math.max(1, seconds) : null,
+          requestId,
         )
       }
       const result = await consume(response)
@@ -105,10 +108,21 @@ export function createTransport(options: TransportOptions) {
       return result
     } catch (error) {
       assertCurrent(identity.epoch)
+      if (error instanceof ApiError) {
+        error.requestId = requestId
+        if (!error.status) error.status = responseStatus
+      }
       if (controller.signal.aborted)
         throw new DOMException('请求已停止或等待超时，结果需核对', 'AbortError')
       if (error instanceof TypeError)
-        throw new ApiError('网络未返回确定结果，请核对后再决定是否重试')
+        throw new ApiError(
+          '网络未返回确定结果，请核对后再决定是否重试',
+          responseStatus,
+          'NETWORK_ERROR',
+          false,
+          null,
+          requestId,
+        )
       throw error
     } finally {
       clearTimeout(timer)
@@ -142,9 +156,14 @@ export function createTransport(options: TransportOptions) {
         if (response.status === 204) return null
         if (!response.headers.get('content-type')?.includes('application/json'))
           throw new ApiError('响应格式不符合接口契约', response.status, 'INVALID_RESPONSE')
-        const parsed = schema.safeParse(JSON.parse(await readLimited(response, 24 * 1024 * 1024)))
-        if (!parsed.success) throw new ApiError('响应字段不符合契约', 0, 'INVALID_RESPONSE')
-        return parsed.data
+        try {
+          const parsed = schema.safeParse(JSON.parse(await readLimited(response, 24 * 1024 * 1024)))
+          if (!parsed.success) throw new ApiError('响应字段不符合契约', 0, 'INVALID_RESPONSE')
+          return parsed.data
+        } catch (e) {
+          if (e instanceof ApiError) throw e
+          throw new ApiError('响应字段不符合契约', response.status, 'INVALID_RESPONSE')
+        }
       })
     },
     text(path: string, mime: 'text/plain' | 'text/markdown', request: RequestOptions = {}) {

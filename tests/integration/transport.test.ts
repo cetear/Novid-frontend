@@ -3,6 +3,9 @@ import { z } from 'zod'
 import { createTransport, readLimited } from '@/shared/api/transport'
 import { userSchema } from '@/shared/api/contracts/backend'
 import { user, jsonResponse } from '../fixtures'
+import { chatApi } from '@/features/chat/api'
+import { configureTransport } from '@/shared/api/transport'
+import { errorMessage } from '@/shared/api/errors'
 function setup(fetcher: typeof fetch) {
   const identity = { token: 'opaque', epoch: 1 },
     unauthorized = vi.fn(),
@@ -17,6 +20,67 @@ function setup(fetcher: typeof fetch) {
   return { identity, unauthorized, passwordRequired, api }
 }
 describe('Transport response and auth boundaries', () => {
+  it('preserves HTTP status and request ID for malformed optional JSON', async () => {
+    const { api } = setup(
+      vi.fn().mockResolvedValue(
+        new Response('{broken', {
+          headers: { 'content-type': 'application/json', 'X-Request-Id': 'invalid-json-uuid' },
+        }),
+      ),
+    )
+    await expect(
+      api.optionalJson('/tasks/1/preview', z.object({ id: z.number() })),
+    ).rejects.toMatchObject({
+      status: 200,
+      code: 'INVALID_RESPONSE',
+      requestId: 'invalid-json-uuid',
+    })
+  })
+  it('preserves server error details and request ID without retrying paid calls', async () => {
+    const response = jsonResponse(
+      { code: 'FEE_LEDGER_UNAVAILABLE', message: '费用账本不可用', retryable: false },
+      503,
+    )
+    response.headers.set('X-Request-Id', 'request-uuid')
+    const fetcher = vi.fn().mockResolvedValue(response),
+      { api } = setup(fetcher)
+    const error = await api.empty('/chat', { method: 'POST' }).catch((e: unknown) => e)
+    expect(error).toMatchObject({
+      status: 503,
+      code: 'FEE_LEDGER_UNAVAILABLE',
+      message: '费用账本不可用',
+      retryable: false,
+      requestId: 'request-uuid',
+    })
+    expect(errorMessage(error)).toContain('HTTP 503，请求编号 request-uuid')
+    expect(fetcher).toHaveBeenCalledOnce()
+  })
+  it('adds the initial response request ID to HTTP 200 SSE business errors', async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(
+          'event: error\ndata: {"code":"MODEL_UNAVAILABLE","message":"模型不可用","retryable":true}\n\n',
+          { headers: { 'content-type': 'text/event-stream', 'x-request-id': 'sse-uuid' } },
+        ),
+      )
+    const { api } = setup(fetcher)
+    configureTransport(api)
+    await expect(
+      chatApi.stream(
+        '问题',
+        { mode: 'SELF', knowledgeBaseIds: [], ownerUserId: null },
+        new AbortController().signal,
+        () => {},
+      ),
+    ).rejects.toMatchObject({
+      status: 200,
+      code: 'MODEL_UNAVAILABLE',
+      retryable: true,
+      requestId: 'sse-uuid',
+    })
+    expect(fetcher).toHaveBeenCalledOnce()
+  })
   it('returns bare arrays without a data wrapper', async () => {
     const { api } = setup(vi.fn().mockResolvedValue(jsonResponse([1, 2])))
     expect(await api.json('/runs', z.array(z.number()))).toEqual([1, 2])

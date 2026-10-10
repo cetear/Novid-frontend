@@ -50,6 +50,13 @@ export const fee: FeeSummary = {
   costStatus: 'UNKNOWN',
 }
 export const mediaPreview: MediaPreview = {
+  contentPlan: {
+    planHash: 'a'.repeat(64),
+    title: '资料驱动水循环',
+    contentSlides: 1,
+    sourceSlides: 2,
+    totalSlides: 3,
+  },
   taskId: 51,
   previewVersion: 1,
   planVersion: 1,

@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { createTransport, configureTransport } from '@/shared/api/transport'
 import { feeSchema, previewSchema, presentationSchema } from '@/shared/api/contracts/media'
 import { mediaApi, PPT_MIME } from '@/features/tasks/mediaApi'
+import { adminApi } from '@/features/admin/api'
 import { tasksApi } from '@/features/tasks/api'
 import { fee, mediaPreview, presentation } from '../mediaFixtures'
 import { jsonResponse, task } from '../fixtures'
@@ -18,6 +19,25 @@ function setup(response: Response) {
   return { api, fetcher }
 }
 describe('S07–S10 private media contracts', () => {
+  it('reads legacy audit rows without inventing missing scope or outcome', async () => {
+    const legacy = {
+      id: 1,
+      actorUserId: 7,
+      action: 'READ_DOCUMENT',
+      resourceId: 101,
+      scopeMode: null,
+      permissionVersion: null,
+      knowledgeEpoch: null,
+      resultCount: null,
+      outcome: null,
+      createdAt: '2026-10-03T00:00:00Z',
+      knowledgeBaseIds: null,
+      ownerUserId: null,
+      resourceIds: null,
+    }
+    setup(jsonResponse([legacy]))
+    expect(await adminApi.audit(0)).toEqual([legacy])
+  })
   it('keeps decimal subtotals separate and rejects unsafe usage counts', () => {
     expect(feeSchema.parse(fee).estimatedAmount).toBe('0.12500001')
     expect(feeSchema.safeParse({ ...fee, attempts: Number.MAX_SAFE_INTEGER + 1 }).success).toBe(
@@ -45,7 +65,7 @@ describe('S07–S10 private media contracts', () => {
       { mode: 'SELF', knowledgeBaseIds: [], ownerUserId: null },
       [101],
       'original-key',
-      'PLANNED',
+      'FIXED',
       {
         presentationOptions: {
           pageCount: 6,
@@ -59,7 +79,7 @@ describe('S07–S10 private media contracts', () => {
     expect(new Headers(options.headers).get('Idempotency-Key')).toBe('original-key')
     expect(JSON.parse(options.body)).toMatchObject({
       presentationOptions: { pageCount: 6 },
-      strategy: 'PLANNED',
+      strategy: 'FIXED',
     })
     expect(JSON.parse(options.body)).not.toHaveProperty('videoOptions')
   })
@@ -82,6 +102,46 @@ describe('S07–S10 private media contracts', () => {
       'Bearer opaque',
     )
     expect(fetcher.mock.calls[0]?.[0]).toBe('/api/v1/artifacts/91')
+  })
+  it('allows automatic or up to 512 PPT total pages, defaults when omitted and rejects one page', async () => {
+    const { fetcher } = setup(jsonResponse({ ...task, taskType: 'NOTES_PPT' }, 202))
+    const scope = { mode: 'SELF' as const, knowledgeBaseIds: [], ownerUserId: null }
+    await tasksApi.create('NOTES_PPT', '', scope, [101], 'defaults')
+    expect(JSON.parse(fetcher.mock.calls[0]![1].body)).not.toHaveProperty('topic')
+    expect(JSON.parse(fetcher.mock.calls[0]![1].body)).not.toHaveProperty('presentationOptions')
+    fetcher.mockResolvedValue(jsonResponse({ ...task, taskType: 'NOTES_PPT' }, 202))
+    await tasksApi.create('NOTES_PPT', '', scope, [101], 'omit-page', 'FIXED', {
+      presentationOptions: { themeId: 'default', maximumAmount: '10', imagePolicy: 'CONCEPT' },
+    })
+    expect(JSON.parse(fetcher.mock.calls[1]![1].body).presentationOptions).not.toHaveProperty(
+      'pageCount',
+    )
+    for (const pageCount of [0, 512]) {
+      fetcher.mockResolvedValue(jsonResponse({ ...task, taskType: 'NOTES_PPT' }, 202))
+      await tasksApi.create('NOTES_PPT', '', scope, [101], 'key-' + pageCount, 'FIXED', {
+        presentationOptions: {
+          pageCount,
+          themeId: 'default',
+          maximumAmount: '30',
+          imagePolicy: 'MIXED',
+        },
+      })
+    }
+    for (const pageCount of [1, 513])
+      expect(() =>
+        tasksApi.create('NOTES_PPT', '', scope, [101], 'invalid', 'FIXED', {
+          presentationOptions: {
+            pageCount,
+            themeId: 'default',
+            maximumAmount: '30',
+            imagePolicy: 'MIXED',
+          },
+        }),
+      ).toThrow('总页数')
+    expect(() => tasksApi.create('NOTES_PPT', '', scope, [101], 'invalid', 'PLANNED')).toThrow(
+      '固定流程',
+    )
+    expect(previewSchema.parse(mediaPreview).contentPlan?.sourceSlides).toBe(2)
   })
   it('rejects a proxy HTML response instead of downloading a false PPTX', async () => {
     const { api } = setup(

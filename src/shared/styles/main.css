@@ -1386,12 +1386,6 @@ summary {
 .run-graph text {
   fill: #253b34;
 }
-.run-node-tree {
-  list-style: none;
-  margin: 16px 0;
-  padding: 0;
-  overflow-wrap: anywhere;
-}
 .node-link {
   background: none;
   border: none;

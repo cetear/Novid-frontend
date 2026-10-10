@@ -1,6 +1,7 @@
 import { expect, type Page } from '@playwright/test'
 import { user, base, document, ai, approval, task } from '../fixtures'
 import { ingestion } from '../stageFixtures'
+import { fee } from '../mediaFixtures'
 export async function mockBackend(
   page: Page,
   options: {
@@ -63,7 +64,8 @@ export async function mockBackend(
         processingRevision: state.document.activeProcessingRevision ?? 1,
         progress: null,
       })
-    if (path === '/tasks/51/plan') return route.fulfill({ status: 204 })
+    if (path === '/tasks/51/content-plan') return route.fulfill({ status: 204 })
+    if (path === '/tasks/51/fees') return send(fee)
     if (path === '/auth/logout') return empty()
     if (path === '/auth/password') {
       if (body.oldPassword === 'wrong-password')
@@ -140,14 +142,18 @@ export async function mockBackend(
       return send(state.approval)
     }
     if (path === '/tasks' && method === 'POST') {
-      expect(Object.keys(body).sort()).toEqual([
-        'documentIds',
-        'scope',
-        'strategy',
-        'taskType',
-        'topic',
-      ])
+      expect(Object.keys(body).sort()).toEqual(
+        [
+          'documentIds',
+          body.taskType === 'QUIZ_GENERATION' ? 'quizOptions' : 'compilationOptions',
+          'scope',
+          'strategy',
+          'taskType',
+          ...(body.remarks ? ['remarks'] : []),
+        ].sort(),
+      )
       expect(request.headers()['idempotency-key']).toBeTruthy()
+      state.task.taskType = String(body.taskType)
       return send(state.task, 202)
     }
     if (path === '/tasks/51') return send(state.task)

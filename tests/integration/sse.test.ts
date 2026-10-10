@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readEventStream } from '@/shared/api/sse/readStream'
 import { createChatReducer } from '@/features/chat/reducer'
 import { ai } from '../fixtures'
+import { aiSchema } from '@/shared/api/contracts/backend'
 function frame(event: string, data: unknown, id = '1') {
   return 'id: ' + id + '\r\nevent: ' + event + '\r\ndata: ' + JSON.stringify(data) + '\r\n\r\n'
 }
@@ -30,6 +31,14 @@ async function read(text: string, fail = false) {
 const progress = frame('progress', { stage: 'validated' }),
   done = frame('done', ai, '4')
 describe('SSE framing and business termination', () => {
+  it('delivers tool document citations with no section identifier in JSON and SSE', async () => {
+    const citation = { ...ai.citations[0]!, sectionId: null, headingPath: '工具文档原文' }
+    const result = { ...ai, citations: [citation] }
+    expect(aiSchema.parse(result).citations[0]?.sectionId).toBeNull()
+    expect(
+      (await read(progress + frame('citation', citation, '3') + frame('done', result, '4'))).result,
+    ).toEqual(result)
+  })
   it('accepts repeated processing heartbeats before validation without publishing a draft', async () => {
     const stages: string[] = []
     const reducer = createChatReducer((text, citations, stage) => {

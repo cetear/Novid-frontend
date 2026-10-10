@@ -133,14 +133,14 @@ onMounted(() => {
         label="访问者 ID"
         width="110"
       /><el-table-column prop="action" label="动作" min-width="190" /><el-table-column
-        prop="scopeMode"
         label="范围"
         width="100"
-      /><el-table-column prop="resultCount" label="候选/结果数" width="120" /><el-table-column
-        prop="outcome"
+        ><template #default="{ row }">{{ row.scopeMode ?? '历史未知' }}</template></el-table-column
+      ><el-table-column prop="resultCount" label="候选/结果数" width="120" /><el-table-column
         label="交付状态"
         min-width="160"
-      /><el-table-column label="时间" min-width="190"
+        ><template #default="{ row }">{{ row.outcome ?? '历史未知' }}</template></el-table-column
+      ><el-table-column label="时间" min-width="190"
         ><template #default="{ row }">{{ dateTime(row.createdAt) }}</template></el-table-column
       ></el-table
     >

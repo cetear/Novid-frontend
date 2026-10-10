@@ -27,6 +27,7 @@ const editing = ref(false),
 const pageUrls = ref<Record<number, string>>({}),
   videoUrl = ref('')
 const plans = ref<Awaited<ReturnType<typeof mediaApi.plans>>>([])
+const plansChecked = ref(false)
 const progress = ref<Awaited<ReturnType<typeof mediaApi.progress>> | null>(null)
 const capabilities = ref<Awaited<ReturnType<typeof mediaApi.capabilities>>>([])
 const profileId = ref(''),
@@ -63,6 +64,7 @@ function refresh() {
   requests.renew()
   clearFiles()
   plans.value = []
+  plansChecked.value = false
   progress.value = null
   capabilities.value = []
   void load(async (signal) => {
@@ -70,6 +72,8 @@ function refresh() {
       mediaApi.preview(props.task.taskId, signal),
       mediaApi.operations(props.task.taskId, signal),
     ])
+    if (isPpt.value && preview && !preview.contentPlan)
+      throw new Error('PPT 预览缺少内容计划，请联系后端核对。')
     const presentation =
       isPpt.value && preview ? await mediaApi.presentation(props.task.taskId, signal) : null
     if (presentation && presentation.check.previewVersion !== preview?.previewVersion)
@@ -89,6 +93,7 @@ function run(action: () => Promise<void>) {
         clearFiles()
         data.value = null
         plans.value = []
+        plansChecked.value = false
         progress.value = null
         units.value = []
         editing.value = false
@@ -135,6 +140,17 @@ function edit() {
 function save() {
   void run(async () => {
     const { preview } = await currentPreview()
+    if (
+      isPpt.value &&
+      (!preview.contentPlan ||
+        units.value.length !== preview.contentPlan.contentSlides ||
+        units.value.some(
+          (unit, i) =>
+            unit.unitId !== preview.units[i]?.unitId ||
+            unit.imageMode !== preview.units[i]?.imageMode,
+        ))
+    )
+      throw new Error('PPT 编辑须保留计划的内容页数、单元 ID、顺序和配图模式。')
     await mediaApi.edit(props.task.taskId, preview.previewVersion, units.value, requests.signal)
     editing.value = false
     refresh()
@@ -249,7 +265,12 @@ function showPage(number: number) {
 }
 function inspect(kind: 'plans' | 'progress' | 'capabilities') {
   void run(async () => {
-    if (kind === 'plans') plans.value = await mediaApi.plans(props.task.taskId, requests.signal)
+    if (kind === 'plans') {
+      plansChecked.value = false
+      plans.value = []
+      plans.value = await mediaApi.plans(props.task.taskId, requests.signal)
+      plansChecked.value = true
+    }
     if (kind === 'progress')
       progress.value = await mediaApi.progress(props.task.taskId, requests.signal)
     if (kind === 'capabilities') capabilities.value = await mediaApi.capabilities(requests.signal)
@@ -277,9 +298,22 @@ function inspect(kind: 'plans' | 'progress' | 'capabilities') {
       :closable="false"
     />
     <p v-if="!loading && !data?.preview" class="muted">
-      当前尚无可读取预览。请等待规划并刷新核对。
+      {{
+        ['FAILED', 'CANCELLED'].includes(task.status)
+          ? '当前任务未生成可读取预览，请根据任务状态和错误码处理。'
+          : '当前尚无可读取预览。请等待规划并刷新核对。'
+      }}
     </p>
     <template v-if="data?.preview">
+      <div v-if="isPpt && data.preview.contentPlan" class="source-review">
+        <h3>{{ data.preview.contentPlan.title }}</h3>
+        <p>
+          内容 {{ data.preview.contentPlan.contentSlides }} 页 + 来源
+          {{ data.preview.contentPlan.sourceSlides }} 页 = 总计
+          {{ data.preview.contentPlan.totalSlides }} 页
+        </p>
+        <p class="muted small">编辑保留内容页数量、顺序和配图模式；保存后须重新批准。</p>
+      </div>
       <div class="preview-banner">
         <div>
           <strong>预览 v{{ data.preview.previewVersion }}</strong>
@@ -573,6 +607,9 @@ function inspect(kind: 'plans' | 'progress' | 'capabilities') {
         >
       </div>
       <p class="muted small">页面刷新只读本地持久状态，不触发外部查询或购买。</p>
+      <p v-if="plansChecked && !plans.length" class="muted">
+        当前没有已保存媒体计划；新 PPT 任务返回空列表属于正常情况。
+      </p>
       <article v-for="op in data?.operations" :key="op.operationId" class="structure-row">
         <strong>{{ op.unitId }} · {{ op.capability }}</strong
         ><StatusBadge :status="op.state" /><span class="mono small"

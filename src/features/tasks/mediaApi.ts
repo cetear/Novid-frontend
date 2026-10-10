@@ -24,6 +24,7 @@ export const mediaApi = {
     return http().optionalJson(`/tasks/${positiveId(id)}/preview`, previewSchema, { signal })
   },
   edit(id: number, previewVersion: number, units: MediaUnit[], signal?: AbortSignal) {
+    if (units.length < 1 || units.length > 512) throw new Error('预览内容单元须为 1～512 个')
     return http().json(`/tasks/${positiveId(id)}/preview`, previewSchema, {
       method: 'PATCH',
       json: { previewVersion, units },

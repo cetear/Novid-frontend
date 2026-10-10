@@ -95,11 +95,10 @@ test('真实后端：SSE 完整交付和只读工具历史复测', async ({ page
       (value) => value.url().endsWith('/sessions') && value.request().method() === 'POST',
     )
     await page.getByRole('button', { name: '新建会话', exact: true }).click()
-    expect((await created).status()).toBe(201)
-    await expect(page.locator('.session-panel')).toContainText(/会话 #\d+ · 版本/)
-    sessionId = Number(
-      (await page.locator('.session-panel').textContent())!.match(/会话 #(\d+) · 版本/)![1],
-    )
+    const createdResponse = await created
+    expect(createdResponse.status()).toBe(201)
+    sessionId = sessionSchema.parse(await createdResponse.json()).id
+    await expect(page.locator('.conversation-heading h1')).toHaveText(name)
     report.sessionId = sessionId
     await page.getByRole('button', { name: '会话设置', exact: true }).click()
     await page.getByLabel('模型配置', { exact: true }).selectOption('knowledge')
@@ -128,8 +127,11 @@ test('真实后端：SSE 完整交付和只读工具历史复测', async ({ page
     const citations = page.locator('.citations button')
     expect(await citations.count()).toBeGreaterThan(0)
     await citations.first().click()
-    await expect(page.locator('.el-drawer')).toContainText('LIVE-1427')
-    await page.locator('.el-drawer__close-btn').click()
+    await expect(page.getByRole('dialog', { name: '引用与原文' })).toContainText('LIVE-1427')
+    await page
+      .getByRole('dialog', { name: '引用与原文' })
+      .getByRole('button', { name: '关闭此对话框' })
+      .click()
     const session = sessionSchema.parse(await (await api('/sessions/' + sessionId)).json())
     expect(session.version).toBeGreaterThan(1)
     const history = z
@@ -207,7 +209,7 @@ test('真实后端：SSE 完整交付和只读工具历史复测', async ({ page
     report.cleanup = cleanup
     report.finishedAt = new Date().toISOString()
     await mkdir('var/live', { recursive: true })
-    await writeFile('var/live/sse-verified-2026-10-04.json', JSON.stringify(report, null, 2) + '\n')
+    await writeFile('var/live/sse-verified-2026-10-09.json', JSON.stringify(report, null, 2) + '\n')
   }
   expect(cleanup.some((item) => item.includes('未确认'))).toBe(false)
 })

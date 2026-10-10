@@ -1,9 +1,229 @@
 import { test, expect } from '@playwright/test'
 import { mockBackend, login } from './mockBackend'
-import { session, modernTask, plan, graph, ingestion, sectionPage } from '../stageFixtures'
+import { session, modernTask, graph, ingestion, sectionPage } from '../stageFixtures'
 import { ai } from '../fixtures'
 import { fee, mediaPreview, presentation, videoCapability } from '../mediaFixtures'
 import { createHash } from 'node:crypto'
+import { learningTask, quizResult, compilationResult, contentPlan } from '../learningFixtures'
+test('资料内容计划：自动默认、204、动态数量与权限撤销清除', async ({ page }) => {
+  const state = await mockBackend(page)
+  state.task = { ...structuredClone(learningTask), status: 'PAUSED' }
+  let phase: 'pending' | 'ready' | 'denied' = 'pending'
+  await page.route('**/api/v1/tasks/51/content-plan', (route) =>
+    route.fulfill({
+      status: phase === 'pending' ? 204 : phase === 'denied' ? 403 : 200,
+      contentType: 'application/json',
+      body:
+        phase === 'pending'
+          ? undefined
+          : JSON.stringify(
+              phase === 'ready'
+                ? contentPlan
+                : { code: 'ACCESS_DENIED', message: '来源授权已撤销', retryable: false },
+            ),
+    }),
+  )
+  await login(page)
+  await page.getByRole('link', { name: '学习与制作', exact: true }).click()
+  await expect(page.getByLabel('题目数量', { exact: true })).toHaveValue('0')
+  await expect(page.getByLabel('主题', { exact: true })).toHaveCount(0)
+  await page.locator('.document-choice .el-checkbox').click()
+  await page.getByRole('button', { name: '创建学习任务', exact: false }).click()
+  await expect(page.getByText('内容计划尚未生成或接受', { exact: false })).toBeVisible()
+  phase = 'ready'
+  await page.getByRole('button', { name: '查询计划' }).click()
+  await expect(page.locator('.content-plan')).toContainText('已完成内容单元 1 / 1')
+  await expect(page.locator('.content-plan')).toContainText('计划 1 题')
+  await page.getByText('查看主题、内容单元与取舍', { exact: true }).click()
+  await expect(page.locator('.content-plan')).toContainText('item-1')
+  await page.setViewportSize({ width: 375, height: 812 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  phase = 'denied'
+  await page.getByRole('button', { name: '查询计划' }).click()
+  await expect(page.getByText('来源授权已撤销', { exact: false })).toBeVisible()
+  await expect(page.locator('.content-plan')).toHaveCount(0)
+  expect(state.requests).not.toContain('GET /tasks/51/plan')
+})
+test('学习创建：结果不确定时保留幂等键，选项变更使用新键', async ({ page }) => {
+  await mockBackend(page)
+  const submitted: Array<{ key: string; body: Record<string, unknown> }> = []
+  await page.route('**/api/v1/tasks', (route) => {
+    submitted.push({
+      key: route.request().headers()['idempotency-key']!,
+      body: route.request().postDataJSON(),
+    })
+    return route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        code: 'TEMPORARILY_UNAVAILABLE',
+        message: '登记结果待核对',
+        retryable: true,
+      }),
+    })
+  })
+  await login(page)
+  await page.getByRole('link', { name: '学习与制作', exact: true }).click()
+  await page.getByLabel('备注（可选）', { exact: true }).fill('稳定创建')
+  await page.locator('.document-choice .el-checkbox').click()
+  await page.getByRole('button', { name: '创建学习任务', exact: false }).click()
+  await expect(page.getByRole('button', { name: '使用原幂等键重新确认' })).toBeVisible()
+  expect(submitted).toHaveLength(1)
+  await page.getByRole('button', { name: '使用原幂等键重新确认' }).click()
+  await expect.poll(() => submitted.length).toBe(2)
+  expect(submitted[1]).toEqual(submitted[0])
+  await page.getByLabel('题目数量', { exact: true }).fill('2')
+  await page.getByLabel('题目数量', { exact: true }).blur()
+  await page.getByRole('button', { name: '创建学习任务', exact: false }).click()
+  await expect.poll(() => submitted.length).toBe(3)
+  expect(submitted[2]!.key).not.toBe(submitted[0]!.key)
+  expect(submitted[2]!.body).toMatchObject({ quizOptions: { questionCount: 2 } })
+})
+test('学习自测：六阶段、暂停恢复、答案折叠、绝对引用定位和来源撤销', async ({ page }) => {
+  const state = await mockBackend(page)
+  state.task = structuredClone(learningTask)
+  let denied = false
+  await page.route('**/api/v1/tasks/51/result', (route) =>
+    route.fulfill({
+      status: denied ? 403 : 200,
+      contentType: 'application/json',
+      headers: { 'X-Request-Id': 'learning-result-uuid' },
+      body: JSON.stringify(
+        denied
+          ? { code: 'ACCESS_DENIED', message: '学习来源已撤销', retryable: false }
+          : quizResult,
+      ),
+    }),
+  )
+  await login(page)
+  await page.getByRole('link', { name: '学习与制作', exact: true }).click()
+  await expect(page.getByText('常见问题 FAQ', { exact: true })).toHaveCount(0)
+  await page.getByLabel('备注（可选）', { exact: true }).fill('自测验证知识')
+  await page.locator('.document-choice .el-checkbox').click()
+  await page.getByRole('button', { name: '创建学习任务', exact: false }).click()
+  await expect(page).toHaveURL(/\/tasks\/51/)
+  await expect(page.locator('.task-facts')).toContainText('/ 6')
+  await expect(page.locator('.el-progress__text')).toContainText('90%')
+  await expect(page.locator('.active-step')).toHaveCount(1)
+  expect(state.bodies).toContainEqual(
+    expect.objectContaining({
+      taskType: 'QUIZ_GENERATION',
+      strategy: 'FIXED',
+      quizOptions: {
+        questionCount: 0,
+        questionTypes: ['SINGLE_CHOICE', 'SHORT_ANSWER'],
+        difficulty: 'MEDIUM',
+      },
+    }),
+  )
+  await page.getByRole('button', { name: '暂停', exact: true }).click()
+  await expect(page.getByText('已暂停', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '恢复', exact: true }).click()
+  await expect(
+    page.locator('.panel > .section-title').getByText('正在生成', { exact: true }),
+  ).toBeVisible()
+  state.task.status = 'SUCCEEDED'
+  state.task.artifactId = 83
+  state.task.completedSteps = 6
+  state.task.progress = {
+    ...state.task.progress!,
+    completedSteps: 6,
+    percent: 100,
+    stage: 'PUBLISHING',
+    message: '学习结果已发布',
+    executionActive: false,
+    currentSteps: [],
+    pollAfterMillis: 0,
+    steps: state.task.progress!.steps.map((step) => ({ ...step, status: 'SUCCEEDED' })),
+  }
+  state.task.stateVersion++
+  await page.getByRole('button', { name: '刷新状态' }).click()
+  await page.getByRole('button', { name: '核验并查看学习结果' }).click()
+  await expect(page.locator('.learning-result')).toContainText('内容质量仍待人工判断')
+  await expect(page.locator('.learning-question .markdown')).not.toBeVisible()
+  await page.getByText('查看答案与解析', { exact: true }).click()
+  await expect(page.locator('.learning-question .markdown')).toContainText('需要知识与验证')
+  await page.getByRole('button', { name: '引用 · 验证指南', exact: true }).click()
+  await expect(page.locator('.el-drawer .source-text')).toHaveText('与验证')
+  await expect(page.getByRole('dialog', { name: '学习引用与原文' })).toContainText('[2, 5)')
+  await page.getByRole('button', { name: '关闭此对话框', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: '学习引用与原文' })).not.toBeVisible()
+  await page.setViewportSize({ width: 375, height: 812 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.screenshot({ path: 'var/screenshots/learning-quiz-mobile.png', fullPage: true })
+  const download = page.waitForEvent('download')
+  await page.getByRole('button', { name: '下载 Markdown' }).click()
+  expect((await download).suggestedFilename()).toBe('report-51.md')
+  denied = true
+  await page.getByRole('button', { name: '核验并查看学习结果' }).click()
+  await expect(page.getByText('学习来源已撤销', { exact: false })).toBeVisible()
+  await expect(page.getByText('请求编号 learning-result-uuid', { exact: false })).toBeVisible()
+  await expect(page.locator('.learning-result')).toHaveCount(0)
+  await expect(page.locator('.markdown')).toHaveCount(0)
+  denied = false
+  await page.getByRole('button', { name: '核验并查看学习结果' }).click()
+  state.document.documentVersion++
+  await page.getByRole('button', { name: '引用 · 验证指南', exact: true }).click()
+  await expect(page.getByText('来源版本或处理代次已变化', { exact: false })).toBeVisible()
+  await expect(page.locator('.learning-result')).toHaveCount(0)
+  await expect(page.locator('.el-drawer .source-text')).toHaveCount(0)
+  expect(state.requests.filter((r) => r === 'POST /tasks')).toHaveLength(1)
+})
+
+test('资料整编：完整选项、目录分组与正文引用，未发布错误不重复创建', async ({ page }) => {
+  const state = await mockBackend(page)
+  state.task = { ...structuredClone(learningTask), status: 'SUCCEEDED', artifactId: 83 }
+  state.task.completedSteps = 6
+  state.task.progress = {
+    ...state.task.progress!,
+    completedSteps: 6,
+    percent: 100,
+    stage: 'PUBLISHING',
+    message: '学习结果已发布',
+    executionActive: false,
+    currentSteps: [],
+    pollAfterMillis: 0,
+    steps: state.task.progress!.steps.map((step) => ({ ...step, status: 'SUCCEEDED' })),
+  }
+  let unavailable = true
+  await page.route('**/api/v1/tasks/51/result', (route) =>
+    route.fulfill({
+      status: unavailable ? 409 : 200,
+      contentType: 'application/json',
+      body: JSON.stringify(
+        unavailable
+          ? { code: 'WORKFLOW_RESULT_UNAVAILABLE', message: '结果尚未发布', retryable: false }
+          : compilationResult,
+      ),
+    }),
+  )
+  await login(page)
+  await page.getByRole('link', { name: '学习与制作', exact: true }).click()
+  await page.getByText('资料整编', { exact: true }).click()
+  await page.getByLabel('备注（可选）', { exact: true }).fill('整编复习资料')
+  await page.locator('.document-choice .el-checkbox').click()
+  await page.getByRole('button', { name: '创建学习任务', exact: false }).click()
+  await page.getByRole('button', { name: '核验并查看学习结果' }).click()
+  await expect(page.getByText('WORKFLOW_RESULT_UNAVAILABLE', { exact: false })).toBeVisible()
+  expect(state.bodies).toContainEqual(
+    expect.objectContaining({
+      taskType: 'KNOWLEDGE_COMPILATION',
+      compilationOptions: { detailLevel: 'DETAILED', maximumChapters: 0 },
+    }),
+  )
+  unavailable = false
+  await page.getByRole('button', { name: '核验并查看学习结果' }).click()
+  await expect(page.getByRole('navigation', { name: '整编目录' })).toContainText('先核对再执行')
+  await expect(page.locator('.learning-section h4')).toHaveText('验证依据')
+  await expect(page.locator('.learning-section .markdown')).toContainText('依据资料进行验证')
+  await expect(page.getByRole('heading', { name: '本人质量验收' })).toHaveCount(0)
+  await page.screenshot({
+    path: 'var/screenshots/learning-compilation-desktop.png',
+    fullPage: true,
+  })
+  expect(state.requests.filter((r) => r === 'POST /tasks')).toHaveLength(1)
+  expect(state.requests).not.toContain('GET /tasks/51/plan')
+})
 test('受控接口：凭证失败、登录、刷新清除内存身份', async ({ page }) => {
   const errors: string[] = []
   page.on('pageerror', (e) => errors.push(e.message))
@@ -146,9 +366,11 @@ test('媒体预览：审批与本人验收分开、PNG Bearer读取、编辑撤�
     }
     if (path.endsWith('/presentation-check'))
       return bundle ? send(bundle) : route.fulfill({ status: 204 })
-    if (path.endsWith('/media-operations')) return send([])
+    if (path.endsWith('/media-operations') || path.endsWith('/media-plans')) return send([])
     if (path.endsWith('/media-review')) {
       reviews.push(route.request().postDataJSON())
+      snapshot.status = 'SUCCEEDED'
+      snapshot.stateVersion++
       return route.fulfill({ status: 204 })
     }
     return send(snapshot)
@@ -181,9 +403,10 @@ test('媒体预览：审批与本人验收分开、PNG Bearer读取、编辑撤�
         })
   })
   await login(page)
-  await page.getByRole('link', { name: '报告任务', exact: true }).click()
+  await page.getByRole('link', { name: '学习与制作', exact: true }).click()
   await page.getByLabel('已知任务 ID').fill('51')
   await page.getByRole('button', { name: '打开', exact: true }).click()
+  await expect(page.locator('.media-workbench')).toContainText('内容 1 页 + 来源 2 页 = 总计 3 页')
   await expect(page.getByRole('heading', { name: '理解水循环' })).toBeVisible()
   expect(decisions).toHaveLength(0)
   await page.getByRole('button', { name: '批准当前版本与费用' }).click()
@@ -195,6 +418,13 @@ test('媒体预览：审批与本人验收分开、PNG Bearer读取、编辑撤�
   await expect(page.locator('.page-preview img')).toBeVisible()
   await expect(page.locator('.page-preview img')).toHaveAttribute('src', /^blob:/)
   await page.screenshot({ path: 'var/screenshots/presentation-desktop.png', fullPage: true })
+  await page.getByText('媒体操作与实际计划', { exact: true }).click()
+  await page.getByRole('button', { name: '读取实际计划' }).click()
+  await expect(page.getByText('新 PPT 任务返回空列表属于正常情况', { exact: false })).toBeVisible()
+  await page.getByLabel('本人验收说明').fill('已检查逐页图文与引用来源')
+  await page.getByRole('button', { name: '已检查，接受产物' }).click()
+  await expect(page.getByRole('button', { name: '下载正式 PPTX' })).toBeVisible()
+  expect(reviews).toEqual([{ previewVersion: 1, accepted: true, note: '已检查逐页图文与引用来源' }])
   await page.getByRole('button', { name: '编辑内容并重新审批' }).click()
   await page.getByRole('dialog').getByRole('textbox').nth(1).fill('修改后的凝结解释')
   await page.getByRole('button', { name: '保存新版预览' }).click()
@@ -262,11 +492,11 @@ test('运营审计：窗口计数、币种聚合与 afterId 游标', async ({ pa
                 actorUserId: 7,
                 action: 'SEARCH_CACHE_HIT',
                 resourceId: null,
-                scopeMode: 'SELECTED',
+                scopeMode: null,
                 permissionVersion: 1,
                 knowledgeEpoch: 2,
                 resultCount: 4,
-                outcome: 'DELIVERABLE',
+                outcome: null,
                 createdAt: '2026-10-05T00:00:00Z',
                 knowledgeBaseIds: [12],
                 ownerUserId: null,
@@ -281,6 +511,7 @@ test('运营审计：窗口计数、币种聚合与 afterId 游标', async ({ pa
   await page.getByRole('link', { name: '运营与审计', exact: true }).click()
   await expect(page.locator('.metrics-grid')).toContainText('12')
   await expect(page.getByText('SEARCH_CACHE_HIT', { exact: true })).toBeVisible()
+  await expect(page.getByText('历史未知', { exact: true })).toHaveCount(2)
   await page.getByRole('button', { name: '读取后续' }).click()
   await expect(page.locator('.page-stepper')).toContainText('游标 17')
   await expect(page.getByRole('button', { name: '读取后续' })).toBeDisabled()
@@ -401,7 +632,7 @@ test('视频规划：真实目录、单片 API 参数、有台词不能无声、
     return send(snapshot)
   })
   await login(page)
-  await page.getByRole('link', { name: '报告任务', exact: true }).click()
+  await page.getByRole('link', { name: '学习与制作', exact: true }).click()
   await page.getByText('教学视频', { exact: true }).click()
   await expect(page.getByRole('radio', { name: '教学视频', exact: true })).toBeChecked()
   await expect(page.locator('.media-options')).toBeVisible()
@@ -418,7 +649,7 @@ test('视频规划：真实目录、单片 API 参数、有台词不能无声、
   }
   await page.getByLabel('主题', { exact: true }).fill('演示凝结现象')
   await page.locator('.document-choice .el-checkbox').click()
-  await page.getByRole('button', { name: '创建规划任务' }).click()
+  await page.getByRole('button', { name: '创建媒体任务' }).click()
   expect(creates).toEqual([
     expect.objectContaining({
       taskType: 'NOTES_VIDEO',
@@ -428,7 +659,7 @@ test('视频规划：真实目录、单片 API 参数、有台词不能无声、
         voiceId: 'voice',
         sceneId: 'scene',
         seconds: 15,
-        maximumAmount: '20',
+        maximumAmount: 20,
         shotCount: 3,
         burnSubtitles: false,
       },
@@ -487,7 +718,7 @@ test('重设计：375px、横屏与减少动效下无溢出，移动导航支持
   await page.keyboard.press('Escape')
   await expect(page.locator('.mobile-navigation')).not.toBeVisible()
   await page.getByRole('button', { name: '打开导航' }).click()
-  await page.getByRole('link', { name: '报告任务', exact: true }).click()
+  await page.getByRole('link', { name: '学习与制作', exact: true }).click()
   await page.getByText('演示文稿', { exact: true }).click()
   await expect(page.getByLabel('演示文稿总页数')).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
@@ -549,20 +780,18 @@ test('受控接口：文档空中间页允许下一页；禁用库按已知 ID �
   await page.getByRole('button', { name: '重新启用' }).click()
   await expect(page.getByRole('button', { name: '禁用知识库', exact: true })).toBeVisible()
 })
-test('受控接口：报告任务动作、PARTIAL 产物和来源撤销', async ({ page }) => {
+test('受控接口：历史 PARTIAL 产物和来源撤销，旧任务不可恢复', async ({ page }) => {
   const state = await mockBackend(page)
   state.document.ingestionStatus = 'RECEIVED'
   state.document.activeProcessingRevision = null
   await login(page)
-  await page.getByRole('link', { name: '报告任务', exact: true }).click()
-  await page.getByLabel('主题', { exact: true }).fill('整理验证流程')
-  await page.locator('.document-choice .el-checkbox').click()
-  await page.getByRole('button', { name: '创建报告任务' }).click()
+  await page.getByRole('link', { name: '学习与制作', exact: true }).click()
+  state.task.status = 'PAUSED'
+  await page.getByLabel('已知任务 ID').fill('51')
+  await page.getByRole('button', { name: '打开', exact: true }).click()
   await expect(page).toHaveURL(/\/tasks\/51/)
-  await page.getByRole('button', { name: '暂停', exact: true }).click()
-  await expect(page.getByText('已暂停', { exact: true })).toBeVisible()
-  await page.getByRole('button', { name: '恢复', exact: true }).click()
-  await expect(page.getByText('正在生成', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '恢复', exact: true })).toHaveCount(0)
+  await expect(page.getByText('旧 FAQ／研究报告已停止创建与恢复', { exact: false })).toBeVisible()
   state.task.status = 'PARTIAL'
   state.task.artifactId = 83
   state.task.completedSteps = 3
@@ -735,22 +964,18 @@ test('新版会话：冲突后核对历史、新版本手动提问、受限内�
   await expect(page.locator('.session-history')).toHaveCount(0)
 })
 
-test('新版报告：五步进度、并行步骤、覆盖与受限计划', async ({ page }) => {
+test('历史报告：保存的五步进度与覆盖保持可读，停用旧计划入口', async ({ page }) => {
   const state = await mockBackend(page)
   state.task = { ...modernTask }
-  await page.route('**/api/v1/tasks/51/plan', (route) =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(plan) }),
-  )
   await login(page)
-  await page.getByRole('link', { name: '报告任务', exact: true }).click()
+  await page.getByRole('link', { name: '学习与制作', exact: true }).click()
   await page.getByLabel('已知任务 ID').fill('51')
   await page.getByRole('button', { name: '打开', exact: true }).click()
   await expect(page.locator('.task-facts')).toContainText('/ 5')
   await expect(page.locator('.active-step')).toHaveCount(2)
   await expect(page.getByText('覆盖未完成', { exact: false })).toBeVisible()
-  await page.getByRole('button', { name: '查询计划' }).click()
-  await expect(page.getByText('核对备份规则', { exact: true })).toBeVisible()
-  await expect(page.getByText('依赖：research、analysis', { exact: false })).toBeVisible()
+  await expect(page.getByRole('button', { name: '查询计划' })).toHaveCount(0)
+  expect(state.requests).not.toContain('GET /tasks/51/plan')
 })
 
 test('新版文档：原代次恢复与章节续读，版本冲突清除旧页', async ({ page }) => {
@@ -828,6 +1053,22 @@ test('新版文档：原代次恢复与章节续读，版本冲突清除旧页',
 
 test('新版运行：实际节点、依赖、未知费用与上一执行', async ({ page }) => {
   await mockBackend(page)
+  const payloadGraph = structuredClone(graph)
+  payloadGraph.nodes.push(
+    { ...graph.nodes[2]!, spanId: 'read-a', type: 'AGENT', name: 'read_slice1', sequence: 4 },
+    { ...graph.nodes[2]!, spanId: 'read-b', type: 'AGENT', name: 'read_slice2', sequence: 5 },
+  )
+  payloadGraph.run.nodeCount = payloadGraph.nodes.length
+  payloadGraph.edges.push(
+    { from: 'root', to: 'read-a', kind: 'CALL' },
+    { from: 'root', to: 'read-b', kind: 'CALL' },
+  )
+  payloadGraph.nodes[1]!.input = {
+    content: '<img src=x onerror=alert(1)>课程问题',
+    truncated: false,
+    originalChars: 30,
+  }
+  payloadGraph.nodes[1]!.output = { content: '课程回答片段', truncated: true, originalChars: 20000 }
   await page.route('**/api/v1/runs?**', (route) =>
     route.fulfill({
       status: 200,
@@ -839,7 +1080,7 @@ test('新版运行：实际节点、依赖、未知费用与上一执行', async
     route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ ...graph, incomplete: true, missingNodeIds: ['missing-span'] }),
+      body: JSON.stringify({ ...payloadGraph, incomplete: true, missingNodeIds: ['missing-span'] }),
     }),
   )
   await login(page)
@@ -847,13 +1088,50 @@ test('新版运行：实际节点、依赖、未知费用与上一执行', async
   await page.getByRole('link', { name: 'trace-1', exact: true }).click()
   await expect(page.getByRole('heading', { name: '运行检查', exact: true })).toBeVisible()
   await expect(page.getByText('运行图不完整', { exact: false })).toBeVisible()
+  await expect(page.locator('.run-node-tree')).toHaveCount(0)
+  await expect(page.locator('.timeline-row')).toHaveCount(0)
+  const readCategory = page.getByRole('button', { name: 'read 2 个节点 总耗时 4000 ms' })
+  await expect(readCategory).toHaveAttribute('aria-expanded', 'false')
+  await readCategory.focus()
+  await page.keyboard.press('Enter')
+  await expect(readCategory).toHaveAttribute('aria-expanded', 'true')
+  await expect(page.locator('.timeline-row')).toHaveCount(2)
+  await expect(page.locator('.timeline-node-duration')).toHaveText(['2000 ms', '2000 ms'])
+  await page.locator('.timeline-row').getByRole('button', { name: 'read_slice1' }).click()
+  await expect(page.getByRole('dialog')).toContainText('节点详情 · read_slice1')
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog')).toBeHidden()
+  await readCategory.click()
+  await expect(page.locator('.timeline-row')).toHaveCount(0)
   await expect(page.getByRole('link', { name: '上一执行' })).toHaveAttribute(
     'href',
     '/runs/trace-old',
   )
   await page.getByRole('button', { name: '查看节点 模型调用', exact: true }).click()
   await expect(page.getByRole('heading', { name: '模型调用', exact: true })).toBeVisible()
+  const detail = page.getByRole('dialog')
+  await expect(detail.getByText('2000 ms', { exact: false })).toBeVisible()
+  await expect(detail.locator('[aria-label="节点输入"] pre')).toHaveText(
+    '<img src=x onerror=alert(1)>课程问题',
+  )
+  await expect(detail.locator('img')).toHaveCount(0)
+  await expect(detail.locator('[aria-label="节点输出"]')).toContainText('快照已截断')
+  await page.screenshot({ path: 'var/screenshots/run-node-details.png', fullPage: false })
+  await page.setViewportSize({ width: 375, height: 812 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await expect
+    .poll(async () => Math.round((await detail.boundingBox())!.width))
+    .toBeLessThanOrEqual(375)
+  await expect(detail.getByRole('heading', { name: '节点详情 · 模型调用' })).toBeVisible()
+  await page.screenshot({ path: 'var/screenshots/run-node-details-mobile.png', fullPage: false })
+  await page.keyboard.press('Escape')
+  await expect(detail).toBeHidden()
   await expect(page.getByText('已知提供方用量：输入 10 / 输出 5', { exact: false })).toBeVisible()
   await expect(page.getByText('费用状态 UNKNOWN', { exact: false })).toBeVisible()
+  await readCategory.click()
+  await expect(page.locator('.timeline-row')).toHaveCount(2)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.screenshot({ path: 'var/screenshots/run-timeline-mobile.png', fullPage: true })
+  await page.setViewportSize({ width: 1440, height: 1000 })
   await page.screenshot({ path: 'var/screenshots/run-graph.png', fullPage: true })
 })

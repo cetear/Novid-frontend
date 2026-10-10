@@ -13,15 +13,16 @@ import {
   sessionMessageSchema,
   approvalSchema,
   taskSchema,
-  planSchema,
   graphSchema,
   toolSchema,
   type AiResult,
   type TaskSnapshot,
 } from '../../src/shared/api/contracts/backend'
 import { z } from 'zod'
+import { learningResultSchema } from '../../src/shared/api/contracts/learning'
+import { contentPlanSchema } from '../../src/shared/api/contracts/contentPlan'
 
-test('真实后端：S01–S06 入库、真实模型、会话、笔记、报告与运行图', async ({ page }) => {
+test('真实后端：入库、真实模型、会话、笔记、学习结果与运行图', async ({ page }) => {
   test.skip(!process.env.NOVID_TEST_USERNAME || !process.env.NOVID_TEST_PASSWORD, '缺少受控账号')
   test.setTimeout(900_000)
   page.setDefaultTimeout(20_000)
@@ -29,7 +30,7 @@ test('真实后端：S01–S06 入库、真实模型、会话、笔记、报告�
   const title = '晨星-' + marker
   const raw =
     '# 晨星项目\n\n项目代号为晨星，编号为 NVD-7319。备份在每周三 21:30 执行。\n\n## 恢复验证\n恢复后须核对校验和，再核对文档数量。只将校验和与数量均一致的恢复标记为通过。\n\n## 联调边界\n这份文档和问题仅为合成验收输入，不含真实业务资料或秘密。'
-  const evidencePath = 'var/live/protocol-2026-10-04.json'
+  const evidencePath = 'var/live/protocol-v2-2026-10-09.json'
   const checks: Array<{ name: string; status: string; detail?: unknown }> = []
   const report: Record<string, unknown> = {
     startedAt: new Date().toISOString(),
@@ -96,7 +97,7 @@ test('真实后端：S01–S06 入库、真实模型、会话、笔记、报告�
     await expect(page).toHaveURL(new RegExp('/knowledge-bases/' + baseId + '$'))
   }
   async function applyScope() {
-    const chat = await page.locator('.chat-workspace').count()
+    const chat = new URL(page.url()).pathname === '/chat'
     if (chat) await page.getByRole('button', { name: '会话设置', exact: true }).click()
     await page.locator('.scope-mode .el-select__wrapper').click()
     await page.getByRole('option', { name: '指定知识库', exact: true }).click()
@@ -125,7 +126,7 @@ test('真实后端：S01–S06 入库、真实模型、会话、笔记、报告�
       }
       if (!['QUEUED', 'RUNNING', 'PAUSED'].includes(value.status)) return value
       if (value.progress?.workerEnabled === false)
-        throw new Error('报告 Worker 关闭，无法验收真实生成')
+        throw new Error('学习 Worker 关闭，无法验收真实生成')
       await new Promise((resolve) =>
         setTimeout(
           resolve,
@@ -133,7 +134,7 @@ test('真实后端：S01–S06 入库、真实模型、会话、笔记、报告�
         ),
       )
     }
-    throw new Error('报告在六分钟观察窗口内未到终态；未重新创建或重发模型请求')
+    throw new Error('学习任务在六分钟观察窗口内未到终态；未重新创建或重发模型请求')
   }
   const scope = () => ({ mode: 'SELECTED', knowledgeBaseIds: [baseId], ownerUserId: null })
   try {
@@ -308,6 +309,7 @@ test('真实后端：S01–S06 入库、真实模型、会话、笔记、报告�
 
     await check('本人会话创建、只读工具 SSE 与版本历史', async () => {
       await page.getByRole('link', { name: '知识问答', exact: true }).click()
+      await expect(page).toHaveURL(/\/chat$/)
       await applyScope()
       await page.getByLabel('新会话标题').fill(title)
       const created = page.waitForResponse(
@@ -315,13 +317,12 @@ test('真实后端：S01–S06 入库、真实模型、会话、笔记、报告�
           response.url().endsWith('/sessions') && response.request().method() === 'POST',
       )
       await page.getByRole('button', { name: '新建会话', exact: true }).click()
-      expect((await created).status()).toBe(201)
-      await expect(page.locator('.session-panel')).toContainText(/会话 #\d+ · 版本/)
-      const sessionId = Number(
-        (await page.locator('.session-panel').textContent())!.match(/会话 #(\d+) · 版本/)![1],
-      )
+      const createdResponse = await created
+      expect(createdResponse.status()).toBe(201)
+      const sessionId = sessionSchema.parse(await createdResponse.json()).id
+      sessions.push(sessionId)
+      await expect(page.locator('.conversation-heading h1')).toHaveText(title)
       const session = sessionSchema.parse(await (await api('/sessions/' + sessionId)).json())
-      sessions.push(session.id)
       report.sessionId = session.id
       await page.getByRole('button', { name: '会话设置', exact: true }).click()
       await page.getByLabel('模型配置', { exact: true }).selectOption('knowledge')
@@ -350,7 +351,11 @@ test('真实后端：S01–S06 入库、真实模型、会话、笔记、报告�
       await expect(page.getByRole('button', { name: '停止阅读', exact: true })).toHaveCount(0, {
         timeout: 90_000,
       })
-      await expect(page.getByText('完整交付', { exact: true })).toBeVisible()
+      report.sseUi = {
+        stage: await page.locator('.chat-exchange .answer-meta').textContent(),
+        error: await page.locator('.chat-exchange .el-alert--error').allTextContents(),
+      }
+      await expect(page.getByText('完整交付', { exact: true })).toBeVisible({ timeout: 90_000 })
       await expect(page.locator('.chat-exchange .markdown')).toContainText('NVD-7319')
       await expect(page.locator('.chat-exchange .citations button').first()).toBeVisible()
       await expect(page.locator('.answer-footer')).not.toContainText('测试结果')
@@ -498,16 +503,24 @@ test('真实后端：S01–S06 入库、真实模型、会话、笔记、报告�
         return report.note
       })
 
-    for (const strategy of ['FIXED', 'PLANNED'] as const)
-      await check('真实报告生成与产物：' + strategy, async () => {
-        await page.getByRole('link', { name: '报告任务', exact: true }).click()
+    for (const taskType of ['QUIZ_GENERATION', 'KNOWLEDGE_COMPILATION'] as const)
+      await check('真实学习结果与产物：' + taskType, async () => {
+        await page.getByRole('link', { name: '学习与制作', exact: true }).click()
+        await expect(page).toHaveURL(/\/tasks$/)
+        await expect(page.getByLabel('备注（可选）', { exact: true })).toBeVisible()
         await applyScope()
         await page
-          .getByText(strategy === 'FIXED' ? '常见问题 FAQ' : '研究报告', { exact: true })
+          .getByRole('radio', {
+            name: taskType === 'QUIZ_GENERATION' ? '学习自测' : '资料整编',
+            exact: true,
+          })
+          .locator('..')
           .click()
-        if (strategy === 'PLANNED') await page.getByText('受限研究计划', { exact: true }).click()
+        if (taskType === 'QUIZ_GENERATION')
+          await page.getByLabel('题目数量', { exact: true }).fill('2')
+        else await page.getByLabel('章节上限', { exact: true }).fill('2')
         await page
-          .getByLabel('主题', { exact: true })
+          .getByLabel('备注（可选）', { exact: true })
           .fill('请用中文归纳晨星项目的编号、备份时间与恢复检查项，严格依据所选资料。')
         await page
           .locator('.document-choice')
@@ -517,7 +530,7 @@ test('真实后端：S01–S06 入库、真实模型、会话、笔记、报告�
         const pending = page.waitForResponse(
           (response) => response.url().endsWith('/tasks') && response.request().method() === 'POST',
         )
-        await page.getByRole('button', { name: '创建报告任务', exact: false }).click()
+        await page.getByRole('button', { name: '创建学习任务', exact: false }).click()
         const response = await pending
         expect(response.status()).toBe(202)
         await expect(page).toHaveURL(/\/tasks\/\d+$/)
@@ -525,33 +538,28 @@ test('真实后端：S01–S06 入库、真实模型、会话、笔记、报告�
         const created = taskSchema.parse(await (await api('/tasks/' + createdId)).json())
         tasks.push(created.taskId)
         const finished = await taskFinished(created.taskId)
-        expect(['SUCCEEDED', 'PARTIAL']).toContain(finished.status)
+        expect(finished.status).toBe('SUCCEEDED')
         expect(finished.modelAttempts).toBeGreaterThan(0)
         expect(finished.progress?.percent).toBe(100)
-        expect(finished.progress?.completedSteps).toBe(5)
+        expect(finished.progress?.completedSteps).toBe(6)
         expect(finished.artifactId).not.toBeNull()
-        expect(finished.coverage?.length).toBeGreaterThan(0)
         await page.getByRole('button', { name: '刷新状态', exact: true }).click()
-        await expect(page.locator('.task-facts')).toContainText('/ 5')
-        await page.getByRole('button', { name: '查询计划', exact: true }).click()
-        const planResponse = await api(
-          '/tasks/' + created.taskId + '/plan',
-          'GET',
-          undefined,
-          strategy === 'PLANNED' ? 200 : 204,
+        await expect(page.locator('.task-facts')).toContainText('/ 6')
+        const plan = contentPlanSchema.parse(
+          await (await api('/tasks/' + created.taskId + '/content-plan')).json(),
         )
-        if (strategy === 'PLANNED') {
-          const value = planSchema.parse(await planResponse.json())
-          expect(value.plan.steps).toHaveLength(3)
-          report.plan = {
-            planHash: value.planHash,
-            modelId: value.modelId,
-            steps: value.plan.steps,
-          }
-          await expect(page.getByText('ResearchWorker', { exact: false })).toBeVisible()
-        }
-        await page.getByRole('button', { name: '核验并预览报告', exact: true }).click()
-        await expect(page.locator('.markdown')).toContainText('NVD-7319', { timeout: 30_000 })
+        expect(plan.fullSourceRead).toBe(true)
+        const result = learningResultSchema.parse(
+          await (await api('/tasks/' + created.taskId + '/result')).json(),
+        )
+        expect(result.fullSourceRead).toBe(true)
+        expect(result.contentPlan).toEqual(plan.plan)
+        expect(result.citations.length).toBeGreaterThan(0)
+        expect(result.qualityStatus).toBe('MODEL_REVIEW_PASSED_PENDING_HUMAN')
+        if (taskType === 'QUIZ_GENERATION') expect(result.quiz?.questions.length).toBeGreaterThan(0)
+        else expect(result.chapters.length).toBeGreaterThan(0)
+        await page.getByRole('button', { name: '核验并查看学习结果', exact: true }).click()
+        await expect(page.locator('.learning-result')).toContainText(result.title)
         const download = page.waitForEvent('download')
         await page.getByRole('button', { name: '下载 Markdown', exact: true }).click()
         expect((await download).suggestedFilename()).toBe('report-' + created.taskId + '.md')
@@ -567,11 +575,12 @@ test('真实后端：S01–S06 入库、真实模型、会话、笔记、报告�
           traces.add(run.traceId)
         return {
           taskId: finished.taskId,
-          strategy,
+          taskType,
           status: finished.status,
           attempts: finished.modelAttempts,
           artifactId: finished.artifactId,
-          coverage: finished.coverage,
+          fullSourceRead: result.fullSourceRead,
+          qualityStatus: result.qualityStatus,
         }
       })
 
@@ -589,6 +598,19 @@ test('真实后端：S01–S06 入库、真实模型、会话、笔记、报告�
             await (await api('/runs/' + encodeURIComponent(id) + '/graph')).json(),
           )
         }
+        report.graphDiagnostics = [
+          ...((report.graphDiagnostics as unknown[]) ?? []),
+          {
+            traceId: id,
+            status: graph.run.status,
+            summaryNodeCount: graph.run.nodeCount,
+            nodes: graph.nodes.length,
+            incomplete: graph.incomplete,
+            telemetryDropped: graph.run.telemetryDropped,
+            missingNodeIds: graph.missingNodeIds,
+          },
+        ]
+        await save()
         expect(graph.run.mock).toBe(false)
         expect(graph.nodes.length).toBeGreaterThan(0)
         expect(graph.nodes.some((node) => node.type === 'MODEL')).toBe(true)
@@ -624,7 +646,7 @@ test('真实后端：S01–S06 入库、真实模型、会话、笔记、报告�
       return summaries
     })
 
-    await check('来源撤销后的会话占位与报告拒绝下载', async () => {
+    await check('来源撤销后的会话占位、私人结果与产物拒绝读取', async () => {
       await openBase()
       await page.getByRole('button', { name: '禁用知识库', exact: true }).click()
       await page.getByRole('button', { name: '确定', exact: true }).click()
@@ -642,11 +664,17 @@ test('真实后端：S01–S06 入库、真实模型、会话、笔记、报告�
       }
       for (const id of tasks) {
         const task: TaskSnapshot = taskSchema.parse(await (await api('/tasks/' + id)).json())
+        if (task.status === 'SUCCEEDED')
+          await api('/tasks/' + id + '/result', 'GET', undefined, 403)
         if (task.artifactId) await api('/artifacts/' + task.artifactId, 'GET', undefined, 403)
       }
       await page.getByRole('button', { name: '重新启用', exact: true }).click()
       await expect(page.getByRole('button', { name: '禁用知识库', exact: true })).toBeVisible()
-      return { restrictedHistory: true, revokedArtifact: true }
+      return {
+        restrictedHistory: true,
+        checkedTasks: tasks.length,
+        checkedSessions: sessions.length,
+      }
     })
   } finally {
     for (const id of approvals) {

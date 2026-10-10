@@ -7,8 +7,9 @@ import { knowledgeApi } from '@/features/knowledge/api'
 import { runsApi } from '@/features/runs/api'
 import { duration, knownUsage, nodeRows } from '@/features/runs/model'
 import { graphSchema, sessionMessageSchema, type TraceGraph } from '@/shared/api/contracts/backend'
+import { contentPlan } from '../learningFixtures'
 import { ai, jsonResponse, task } from '../fixtures'
-import { graph, session, ingestion, sectionPage, plan } from '../stageFixtures'
+import { graph, session, ingestion, sectionPage } from '../stageFixtures'
 const self = { mode: 'SELF' as const, knowledgeBaseIds: [], ownerUserId: null }
 let response: Response
 const calls: Array<{ path: string; options: RequestInit; body: unknown }> = []
@@ -75,15 +76,17 @@ describe('S01–S06 protocol extensions', () => {
       }),
     ).toThrow('文本')
   })
-  it('distinguishes absent plan 204 from a stored plan and limits PLANNED to research', async () => {
+  it('distinguishes absent plan 204 from an accepted content plan and requires FIXED for learning', async () => {
     response = new Response(null, { status: 204 })
-    expect(await tasksApi.plan(51)).toBeNull()
-    response = jsonResponse(plan)
-    expect((await tasksApi.plan(51))?.planHash).toBe(plan.planHash)
+    expect(await tasksApi.contentPlan(51)).toBeNull()
+    response = jsonResponse(contentPlan)
+    expect((await tasksApi.contentPlan(51))?.planHash).toBe(contentPlan.planHash)
     response = jsonResponse(task, 202)
-    await tasksApi.create('RESEARCH_REPORT', '主题', self, [101], 'key', 'PLANNED')
-    expect(calls.at(-1)?.body).toMatchObject({ strategy: 'PLANNED' })
-    expect(() => tasksApi.create('FAQ', '主题', self, [101], 'key', 'PLANNED')).toThrow('研究报告')
+    await tasksApi.create('KNOWLEDGE_COMPILATION', '主题', self, [101], 'key', 'FIXED')
+    expect(calls.at(-1)?.body).toMatchObject({ strategy: 'FIXED' })
+    expect(() => tasksApi.create('QUIZ_GENERATION', '主题', self, [101], 'key', 'PLANNED')).toThrow(
+      '固定流程',
+    )
   })
   it('keeps section version/revision pinned and recovery tied to the same revision', async () => {
     response = jsonResponse(sectionPage)

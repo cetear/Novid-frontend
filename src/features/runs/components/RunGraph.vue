@@ -1,12 +1,17 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, useId } from 'vue'
+import { ElDrawer } from 'element-plus'
+import NodePayload from './NodePayload.vue'
 import type { TraceGraph, TraceSpan } from '@/shared/api/contracts/backend'
-import { nodeRows, duration, knownUsage } from '../model'
+import { nodeRows, duration, knownUsage, timelineGroups } from '../model'
 import { dateTime } from '@/shared/lib/format'
 import StatusBadge from '@/shared/ui/StatusBadge.vue'
 const props = defineProps<{ graph: TraceGraph }>()
 const selectedId = ref('')
+const timelineId = useId()
+const expandedCategories = ref(new Set<string>())
 const rows = computed(() => nodeRows(props.graph.nodes))
+const groups = computed(() => timelineGroups(props.graph.nodes))
 const selected = computed(() => props.graph.nodes.find((node) => node.spanId === selectedId.value))
 const usage = computed(() => knownUsage(props.graph))
 const positions = computed(
@@ -44,12 +49,16 @@ function timeline(node: TraceSpan) {
   const width = ((duration(node) ?? 0) / clock.value.span) * 100
   return { left: `${offset}%`, width: `${Math.max(0.5, width)}%` }
 }
+function toggleGroup(category: string) {
+  if (expandedCategories.value.has(category)) expandedCategories.value.delete(category)
+  else expandedCategories.value.add(category)
+}
 </script>
 <template>
   <section class="panel">
     <h3>实际调用与依赖</h3>
     <p class="muted small">
-      实线：嵌套调用；虚线：执行依赖。节点按登记序号排列，序号不代表并行执行顺序。点击节点查看事实。
+      实线：嵌套调用；虚线：执行依赖。节点按登记序号排列，序号不代表并行执行顺序。点击节点查看输入、输出和耗时。
     </p>
     <p v-if="graph.incomplete" class="inline-error">
       运行图不完整：可能仍在执行、等待写入、记录缺失或被截断。不能据此认定全部步骤完成。
@@ -63,7 +72,7 @@ function timeline(node: TraceSpan) {
         class="run-graph"
         width="1100"
         :height="Math.max(100, rows.length * 65 + 30)"
-        role="img"
+        role="group"
         aria-label="实际运行调用与依赖图"
       >
         <defs>
@@ -97,6 +106,7 @@ function timeline(node: TraceSpan) {
           tabindex="0"
           role="button"
           :aria-label="'查看节点 ' + node.name"
+          :aria-pressed="selectedId === node.spanId"
           @click="selectedId = node.spanId"
           @keydown.enter="selectedId = node.spanId"
           @keydown.space.prevent="selectedId = node.spanId"
@@ -114,51 +124,104 @@ function timeline(node: TraceSpan) {
         </g>
       </svg>
     </div>
-    <ul class="run-node-tree">
-      <li
-        v-for="{ node, depth, brokenParent } in rows"
-        :key="node.spanId"
-        :style="{ paddingLeft: Math.min(depth, 4) * 16 + 'px' }"
-      >
-        <button class="node-link" @click="selectedId = node.spanId">{{ node.name }}</button> ·
-        {{ node.status }} <span v-if="brokenParent" class="muted small">（父节点缺失或循环）</span>
-      </li>
-    </ul>
   </section>
   <section class="panel">
     <h3>实际时间线</h3>
-    <p class="muted small">未结束节点仅标记开始位置，耗时保持未知。模型首次 Token 时间未知。</p>
-    <div v-for="{ node } in rows" :key="node.spanId" class="timeline-row">
-      <button class="node-link" @click="selectedId = node.spanId">{{ node.name }}</button>
-      <div class="timeline-track">
-        <span :class="{ unfinished: !node.endedAt }" :style="timeline(node)" />
+    <p class="muted small">
+      按节点类别累加已知耗时，点击类别展开各节点明细。并行或嵌套节点的耗时分别计入，不等于运行总时长。
+      未结束节点仅标记开始位置，耗时保持未知。模型首次 Token 时间未知。
+    </p>
+    <p v-if="!groups.length" class="muted">暂无时间线记录。</p>
+    <div v-for="(group, index) in groups" :key="group.category" class="timeline-group">
+      <button
+        type="button"
+        class="timeline-group-toggle"
+        :aria-expanded="expandedCategories.has(group.category)"
+        :aria-controls="`${timelineId}-${index}`"
+        @click="toggleGroup(group.category)"
+      >
+        <span class="timeline-group-label">
+          <svg
+            class="timeline-chevron"
+            :class="{ expanded: expandedCategories.has(group.category) }"
+            width="16"
+            height="16"
+            viewBox="0 0 16 16"
+            aria-hidden="true"
+          >
+            <path d="m6 3 5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.5" />
+          </svg>
+          <strong>{{ group.category }}</strong>
+          <span class="muted small">{{ group.nodes.length }} 个节点</span>
+        </span>
+        <span class="timeline-group-duration small">
+          {{ group.unknownCount ? '已知耗时' : '总耗时' }}
+          {{ group.totalDuration === null ? '未知' : group.totalDuration + ' ms' }}
+          <span v-if="group.unknownCount" class="muted">
+            · {{ group.unknownCount }} 个耗时未知
+          </span>
+        </span>
+      </button>
+      <div :id="`${timelineId}-${index}`" :hidden="!expandedCategories.has(group.category)">
+        <div v-if="expandedCategories.has(group.category)" class="timeline-group-details">
+          <div v-for="node in group.nodes" :key="node.spanId" class="timeline-row">
+            <button class="node-link" @click="selectedId = node.spanId">{{ node.name }}</button>
+            <div class="timeline-track">
+              <span :class="{ unfinished: !node.endedAt }" :style="timeline(node)" />
+            </div>
+            <span class="timeline-node-duration small">
+              {{ duration(node) === null ? '未知' : duration(node) + ' ms' }}
+            </span>
+          </div>
+        </div>
       </div>
-      <span class="small">{{ duration(node) === null ? '未知' : duration(node) + ' ms' }}</span>
     </div>
   </section>
-  <section v-if="selected" class="panel">
-    <h3>{{ selected.name }}</h3>
-    <StatusBadge :status="selected.status" />
-    <p class="mono small">
-      {{ selected.spanId }} · 父节点 {{ selected.parentSpanId ?? '无' }} · 登记序号
-      {{ selected.sequence }}
-    </p>
-    <p>
-      角色 {{ selected.agentId ?? '无' }} · 步骤 {{ selected.stepId ?? '无' }} · 模型
-      {{ selected.modelId ?? '无' }} · 尝试 {{ selected.attempt ?? '未知' }}
-    </p>
-    <p>
-      开始 {{ dateTime(selected.startedAt) }} · 结束 {{ dateTime(selected.endedAt) }} · 耗时
-      {{ duration(selected) ?? '未知' }} ms
-    </p>
-    <p>
-      输入 {{ selected.inputTokens ?? '未知' }} · 输出 {{ selected.outputTokens ?? '未知' }} ·
-      用量来源 {{ selected.usageSource ?? '未知' }}
-    </p>
-    <p v-if="selected.routeReason">路由原因：{{ selected.routeReason }}</p>
-    <p v-if="selected.toolCallHash" class="mono small">工具关联哈希 {{ selected.toolCallHash }}</p>
-    <p v-if="selected.errorCode" class="inline-error">{{ selected.errorCode }}</p>
-  </section>
+  <ElDrawer
+    :model-value="Boolean(selected)"
+    :title="'节点详情 · ' + (selected?.name ?? '')"
+    size="min(640px, 100vw)"
+    destroy-on-close
+    @update:model-value="
+      (open: boolean) => {
+        if (!open) selectedId = ''
+      }
+    "
+  >
+    <section v-if="selected" aria-label="节点详情">
+      <h3>{{ selected.name }}</h3>
+      <StatusBadge :status="selected.status" />
+      <p class="mono small">
+        {{ selected.spanId }} · 父节点 {{ selected.parentSpanId ?? '无' }} · 登记序号
+        {{ selected.sequence }}
+      </p>
+      <p>
+        角色 {{ selected.agentId ?? '无' }} · 步骤 {{ selected.stepId ?? '无' }} · 模型
+        {{ selected.modelId ?? '无' }} · 尝试 {{ selected.attempt ?? '未知' }}
+      </p>
+      <p>
+        开始 {{ dateTime(selected.startedAt) }} · 结束 {{ dateTime(selected.endedAt) }} · 耗时
+        {{ duration(selected) ?? '未知' }} ms
+      </p>
+      <p>
+        输入 Token {{ selected.inputTokens ?? '未知' }} · 输出 Token
+        {{ selected.outputTokens ?? '未知' }} · 用量来源 {{ selected.usageSource ?? '未知' }}
+      </p>
+      <p
+        v-if="!selected.input && !selected.output && selected.payloadSources?.length"
+        class="inline-error"
+      >
+        来源当前不可访问，输入和输出内容已隐藏。
+      </p>
+      <NodePayload label="节点输入" :payload="selected.input" />
+      <NodePayload label="节点输出" :payload="selected.output" />
+      <p v-if="selected.routeReason">路由原因：{{ selected.routeReason }}</p>
+      <p v-if="selected.toolCallHash" class="mono small">
+        工具关联哈希 {{ selected.toolCallHash }}
+      </p>
+      <p v-if="selected.errorCode" class="inline-error">{{ selected.errorCode }}</p>
+    </section>
+  </ElDrawer>
   <section class="panel">
     <h3>用量与费用</h3>
     <p>
@@ -171,3 +234,55 @@ function timeline(node: TraceSpan) {
     </p>
   </section>
 </template>
+
+<style scoped>
+.timeline-group {
+  border-bottom: 1px solid var(--color-border);
+}
+.timeline-group-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 20px;
+  width: 100%;
+  min-height: 48px;
+  padding: 12px 8px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--color-text);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.timeline-group-toggle:hover {
+  background: var(--color-surface-soft);
+}
+.timeline-group-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.timeline-chevron {
+  flex-shrink: 0;
+}
+.timeline-chevron.expanded {
+  transform: rotate(90deg);
+}
+.timeline-group-duration,
+.timeline-node-duration {
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.timeline-group-details {
+  padding: 0 8px 8px;
+}
+.run-graph g:focus-visible rect {
+  stroke: #28745f;
+  stroke-width: 3px;
+}
+</style>

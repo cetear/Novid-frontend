@@ -14,6 +14,8 @@ import Feedback from '@/shared/ui/Feedback.vue'
 import PageStepper from '@/shared/ui/PageStepper.vue'
 import StatusBadge from '@/shared/ui/StatusBadge.vue'
 import { mediaApi } from '../mediaApi'
+import type { QuizOptions, CompilationOptions } from '@/shared/api/contracts/learning'
+import { ApiError } from '@/shared/api/errors'
 import type {
   TaskType,
   CatalogItem,
@@ -26,16 +28,25 @@ const auth = useAuth(),
   known = useKnownTasks(),
   router = useRouter()
 const topic = ref(''),
-  taskType = ref<TaskType>('RESEARCH_REPORT'),
-  strategy = ref<'FIXED' | 'PLANNED'>('FIXED'),
+  remarks = ref(''),
+  taskType = ref<TaskType>('QUIZ_GENERATION'),
   selected = ref<number[]>([]),
   page = ref(0),
   knownId = ref('')
 const mediaTask = computed(() => ['NOTES_PPT', 'NOTES_VIDEO'].includes(taskType.value))
+const strategy = computed(() =>
+  taskType.value === 'NOTES_VIDEO' ? ('PLANNED' as const) : ('FIXED' as const),
+)
+const quiz = ref<QuizOptions>({
+  questionCount: 0,
+  questionTypes: ['SINGLE_CHOICE', 'SHORT_ANSWER'],
+  difficulty: 'MEDIUM',
+})
+const compilation = ref<CompilationOptions>({ detailLevel: 'DETAILED', maximumChapters: 0 })
 const presentation = ref<PresentationOptions>({
-  pageCount: 6,
+  pageCount: 0,
   themeId: 'default',
-  maximumAmount: '20',
+  maximumAmount: '30',
   imagePolicy: 'MIXED',
 })
 const video = ref<VideoOptions>({
@@ -62,11 +73,17 @@ const key = ref(crypto.randomUUID()),
   uncertain = ref(false)
 const fingerprint = computed(() =>
   JSON.stringify({
-    topic: topic.value,
+    instructions: taskType.value === 'NOTES_VIDEO' ? topic.value : remarks.value,
     taskType: taskType.value,
     strategy: strategy.value,
     scope: scope.scope,
     ids: selected.value,
+    learning:
+      taskType.value === 'QUIZ_GENERATION'
+        ? quiz.value
+        : taskType.value === 'KNOWLEDGE_COMPILATION'
+          ? compilation.value
+          : null,
     media:
       taskType.value === 'NOTES_PPT'
         ? presentation.value
@@ -76,8 +93,6 @@ const fingerprint = computed(() =>
   }),
 )
 watch(taskType, (value) => {
-  if (value === 'FAQ') strategy.value = 'FIXED'
-  if (['NOTES_PPT', 'NOTES_VIDEO'].includes(value)) strategy.value = 'PLANNED'
   if (value === 'NOTES_VIDEO')
     void loadCatalogs(async (signal) => {
       const [catalogs, capabilities] = await Promise.all([
@@ -114,7 +129,7 @@ function create() {
     try {
       const task = await tasksApi.create(
         taskType.value,
-        topic.value,
+        taskType.value === 'NOTES_VIDEO' ? topic.value : remarks.value,
         frozen,
         [...selected.value],
         key.value,
@@ -123,14 +138,16 @@ function create() {
           ? { presentationOptions: { ...presentation.value } }
           : taskType.value === 'NOTES_VIDEO'
             ? { videoOptions: { ...video.value } }
-            : undefined,
+            : taskType.value === 'QUIZ_GENERATION'
+              ? { quizOptions: { ...quiz.value, questionTypes: [...quiz.value.questionTypes] } }
+              : { compilationOptions: { ...compilation.value } },
       )
       known.add(task.taskId)
       known.created = task
       uncertain.value = false
       await router.push('/tasks/' + task.taskId)
     } catch (e) {
-      uncertain.value = true
+      uncertain.value = !(e instanceof ApiError && e.status >= 400 && e.status < 500)
       throw e
     }
   })
@@ -143,28 +160,67 @@ function open() {
 </script>
 <template>
   <PageHeader
-    eyebrow="FROM SOURCES TO REPORTS"
-    title="让资料，形成观点。"
-    description="从授权资料出发，整理报告、制作演示文稿或规划教学视频。媒体生成前需核对预览与费用。"
+    eyebrow="LEARN & CREATE"
+    title="让资料，成为知识。"
+    description="从授权资料出发，生成学习自测、整编复习文档，或制作演示文稿与教学视频。"
   /><ScopePicker :admin="auth.user?.role === 'ADMIN'" /><Feedback :error="error || loadError" />
   <div class="task-create-grid">
     <section class="panel">
       <span class="eyebrow">01 / CREATE</span>
-      <h2>{{ mediaTask ? '创建媒体任务' : '创建报告' }}</h2>
+      <h2>{{ mediaTask ? '创建媒体任务' : '创建学习任务' }}</h2>
       <el-form label-position="top" @submit.prevent="create"
         ><el-form-item label="输出类型"
           ><el-radio-group v-model="taskType" :disabled="busy"
-            ><el-radio-button value="RESEARCH_REPORT">研究报告</el-radio-button
-            ><el-radio-button value="FAQ">常见问题 FAQ</el-radio-button
+            ><el-radio-button value="QUIZ_GENERATION">学习自测</el-radio-button
+            ><el-radio-button value="KNOWLEDGE_COMPILATION">资料整编</el-radio-button
             ><el-radio-button value="NOTES_PPT">演示文稿</el-radio-button
             ><el-radio-button value="NOTES_VIDEO">教学视频</el-radio-button></el-radio-group
           ></el-form-item
-        ><el-form-item v-if="taskType === 'RESEARCH_REPORT'" label="执行策略">
-          <el-radio-group v-model="strategy" :disabled="busy">
-            <el-radio-button value="FIXED">固定流程</el-radio-button>
-            <el-radio-button value="PLANNED">受限研究计划</el-radio-button>
-          </el-radio-group>
-        </el-form-item>
+        >
+        <template v-if="taskType === 'QUIZ_GENERATION'">
+          <el-form-item label="题目数量"
+            ><el-input-number
+              v-model="quiz.questionCount"
+              :min="0"
+              :max="512"
+              :precision="0"
+              :disabled="busy"
+              aria-label="题目数量"
+          /></el-form-item>
+          <p class="muted small">
+            0 表示根据资料自动规划；1～512 表示精确题数。备注也可提出数量要求。
+          </p>
+          <el-form-item label="允许题型"
+            ><el-checkbox-group v-model="quiz.questionTypes" :disabled="busy"
+              ><el-checkbox value="SINGLE_CHOICE">单选题</el-checkbox
+              ><el-checkbox value="SHORT_ANSWER">简答题</el-checkbox></el-checkbox-group
+            ></el-form-item
+          >
+          <el-form-item label="难度"
+            ><el-select v-model="quiz.difficulty" :disabled="busy" aria-label="难度"
+              ><el-option label="简单" value="EASY" /><el-option
+                label="中等"
+                value="MEDIUM" /><el-option label="困难" value="HARD" /></el-select
+          ></el-form-item>
+        </template>
+        <template v-if="taskType === 'KNOWLEDGE_COMPILATION'">
+          <el-form-item label="整编详略"
+            ><el-select v-model="compilation.detailLevel" :disabled="busy" aria-label="整编详略"
+              ><el-option label="简洁" value="CONCISE" /><el-option
+                label="详细"
+                value="DETAILED" /></el-select
+          ></el-form-item>
+          <el-form-item label="章节上限"
+            ><el-input-number
+              v-model="compilation.maximumChapters"
+              :min="0"
+              :max="512"
+              :precision="0"
+              :disabled="busy"
+              aria-label="章节上限"
+          /></el-form-item>
+          <p class="muted small">0 表示自动规划；1～512 设置章节上限，实际章节数由资料决定。</p>
+        </template>
         <div v-if="mediaTask" class="media-options">
           <el-alert
             title="先规划并核对，再批准生成。真实媒体质量仍需本人验收。"
@@ -175,12 +231,15 @@ function open() {
             <el-form-item label="总页数（包含来源页）"
               ><el-input-number
                 v-model="presentation.pageCount"
-                :min="2"
-                :max="12"
+                :min="0"
+                :max="512"
                 :precision="0"
                 :disabled="busy"
                 aria-label="演示文稿总页数"
             /></el-form-item>
+            <p class="muted small">
+              0 表示自动规划；指定总页数为 2～512，包含动态来源页。批准前可查看内容页与来源页数量。
+            </p>
             <el-form-item label="配图策略"
               ><el-select v-model="presentation.imagePolicy" :disabled="busy"
                 ><el-option label="混合配图" value="MIXED" /><el-option
@@ -259,7 +318,7 @@ function open() {
             </p>
           </template>
         </div>
-        <el-form-item label="主题" for="report-topic"
+        <el-form-item v-if="taskType === 'NOTES_VIDEO'" label="主题" for="report-topic"
           ><el-input
             id="report-topic"
             v-model="topic"
@@ -269,6 +328,18 @@ function open() {
             maxlength="1000"
             placeholder="描述需要整理的主题和重点…"
         /></el-form-item>
+        <el-form-item v-else label="备注（可选）" for="task-remarks">
+          <el-input
+            id="task-remarks"
+            v-model="remarks"
+            :disabled="busy"
+            type="textarea"
+            :rows="3"
+            maxlength="1000"
+            show-word-limit
+            placeholder="可填写受众、重点、数量或结构要求；留空由资料决定。"
+          />
+        </el-form-item>
         <div class="section-title">
           <h3>来源文档</h3>
           <span class="muted small">已选 {{ selected.length }}/6</span>
@@ -300,7 +371,8 @@ function open() {
         </p>
         <p class="muted small">
           未 READY 或没有激活代次的文档可以登记任务，但执行会因 INDEX_NOT_READY
-          失败。长文可能仅完成部分覆盖。
+          失败。资料任务原文容量由服务端策略决定，默认合计最多 1,000,000 UTF-8
+          字节；超限需缩小范围。
         </p>
         <el-alert
           v-if="uncertain"
@@ -313,7 +385,9 @@ function open() {
           :loading="busy"
           :disabled="
             !selected.length ||
-            !topic.trim() ||
+            (taskType === 'NOTES_VIDEO' && !topic.trim()) ||
+            (taskType === 'NOTES_PPT' && presentation.pageCount === 1) ||
+            (taskType === 'QUIZ_GENERATION' && !quiz.questionTypes.length) ||
             (taskType === 'NOTES_VIDEO' &&
               (!video.characterId ||
                 !video.voiceId ||
@@ -322,7 +396,7 @@ function open() {
           "
           class="full-width"
           >{{
-            uncertain ? '使用原幂等键重新确认' : mediaTask ? '创建规划任务 →' : '创建报告任务 →'
+            uncertain ? '使用原幂等键重新确认' : mediaTask ? '创建媒体任务 →' : '创建学习任务 →'
           }}</el-button
         ></el-form
       >
@@ -336,7 +410,7 @@ function open() {
         </p>
         <div v-if="known.ids.length" class="known-task-list">
           <RouterLink v-for="id in known.ids" :key="id" :to="'/tasks/' + id"
-            ><span>报告任务 #{{ id }}</span
+            ><span>任务 #{{ id }}</span
             ><span>查看 →</span></RouterLink
           >
         </div>
@@ -354,7 +428,10 @@ function open() {
       </section>
       <div class="quiet-note">
         <strong>资料先行，结果有据。</strong>
-        <p>报告只有后台完成后才能读取。长时间等待时，请核对后端处理环境。</p>
+        <p>
+          学习结果只有后台发布后才能读取。旧 FAQ／研究报告可通过已知 ID
+          查询历史记录，已停止创建与恢复。
+        </p>
       </div>
     </aside>
   </div>
