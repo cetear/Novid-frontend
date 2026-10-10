@@ -1090,13 +1090,16 @@ test('新版运行：实际节点、依赖、未知费用与上一执行', async
   await expect(page.getByText('运行图不完整', { exact: false })).toBeVisible()
   await expect(page.locator('.run-node-tree')).toHaveCount(0)
   await expect(page.locator('.timeline-row')).toHaveCount(0)
-  const readCategory = page.getByRole('button', { name: 'read 2 个节点 总耗时 4000 ms' })
+  const readCategory = page.getByRole('button', { name: 'read 2 个节点 总耗时 0小时0分钟4秒0毫秒' })
   await expect(readCategory).toHaveAttribute('aria-expanded', 'false')
   await readCategory.focus()
   await page.keyboard.press('Enter')
   await expect(readCategory).toHaveAttribute('aria-expanded', 'true')
   await expect(page.locator('.timeline-row')).toHaveCount(2)
-  await expect(page.locator('.timeline-node-duration')).toHaveText(['2000 ms', '2000 ms'])
+  await expect(page.locator('.timeline-node-duration')).toHaveText([
+    '0小时0分钟2秒0毫秒',
+    '0小时0分钟2秒0毫秒',
+  ])
   await page.locator('.timeline-row').getByRole('button', { name: 'read_slice1' }).click()
   await expect(page.getByRole('dialog')).toContainText('节点详情 · read_slice1')
   await page.keyboard.press('Escape')
@@ -1107,10 +1110,11 @@ test('新版运行：实际节点、依赖、未知费用与上一执行', async
     'href',
     '/runs/trace-old',
   )
+  await page.locator('.run-graph-toggle').first().click()
   await page.getByRole('button', { name: '查看节点 模型调用', exact: true }).click()
   await expect(page.getByRole('heading', { name: '模型调用', exact: true })).toBeVisible()
   const detail = page.getByRole('dialog')
-  await expect(detail.getByText('2000 ms', { exact: false })).toBeVisible()
+  await expect(detail.getByText('0小时0分钟2秒0毫秒', { exact: false })).toBeVisible()
   await expect(detail.locator('[aria-label="节点输入"] pre')).toHaveText(
     '<img src=x onerror=alert(1)>课程问题',
   )

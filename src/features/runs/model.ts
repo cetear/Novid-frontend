@@ -1,5 +1,30 @@
 import type { TraceGraph, TraceSpan } from '@/shared/api/contracts/backend'
 
+export function nodeHierarchy(nodes: TraceSpan[]) {
+  const parents = new Map(nodes.map((node) => [node.spanId, node.parentSpanId]))
+  // Missing parents become roots; break corrupt cycles so every node remains reachable.
+  for (const [id, parent] of parents) {
+    if (parent && !parents.has(parent)) parents.set(id, null)
+  }
+  for (const node of nodes) {
+    const seen = new Set([node.spanId])
+    let parent = parents.get(node.spanId)
+    while (parent && parents.has(parent) && !seen.has(parent)) {
+      seen.add(parent)
+      parent = parents.get(parent)
+    }
+    if (parent) parents.set(node.spanId, null)
+  }
+  const children = new Map<string, string[]>()
+  const roots: string[] = []
+  for (const node of nodes) {
+    const parent = parents.get(node.spanId)
+    if (!parent) roots.push(node.spanId)
+    else children.set(parent, [...(children.get(parent) ?? []), node.spanId])
+  }
+  return { children, roots }
+}
+
 export function nodeRows(nodes: TraceSpan[]) {
   const byId = new Map(nodes.map((node) => [node.spanId, node]))
   return [...nodes]

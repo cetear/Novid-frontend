@@ -1,16 +1,36 @@
 <script setup lang="ts">
-import { computed, ref, useId } from 'vue'
+import { computed, ref, useId, watch } from 'vue'
 import { ElDrawer } from 'element-plus'
 import NodePayload from './NodePayload.vue'
 import type { TraceGraph, TraceSpan } from '@/shared/api/contracts/backend'
-import { nodeRows, duration, knownUsage, timelineGroups } from '../model'
-import { dateTime } from '@/shared/lib/format'
+import { nodeRows, nodeHierarchy, duration, knownUsage, timelineGroups } from '../model'
+import { dateTime, formatDuration } from '@/shared/lib/format'
 import StatusBadge from '@/shared/ui/StatusBadge.vue'
 const props = defineProps<{ graph: TraceGraph }>()
 const selectedId = ref('')
 const timelineId = useId()
 const expandedCategories = ref(new Set<string>())
-const rows = computed(() => nodeRows(props.graph.nodes))
+const expandedNodes = ref(new Set<string>())
+const hierarchy = computed(() => nodeHierarchy(props.graph.nodes))
+const rows = computed(() => {
+  const visible = new Set<string>()
+  const pending = [...hierarchy.value.roots]
+  while (pending.length) {
+    const id = pending.pop()!
+    if (visible.has(id)) continue
+    visible.add(id)
+    if (expandedNodes.value.has(id)) pending.push(...(hierarchy.value.children.get(id) ?? []))
+  }
+  return nodeRows(props.graph.nodes).filter(({ node }) => visible.has(node.spanId))
+})
+watch(
+  () => props.graph.run.traceId,
+  () => {
+    expandedNodes.value.clear()
+    expandedCategories.value.clear()
+    selectedId.value = ''
+  },
+)
 const groups = computed(() => timelineGroups(props.graph.nodes))
 const selected = computed(() => props.graph.nodes.find((node) => node.spanId === selectedId.value))
 const usage = computed(() => knownUsage(props.graph))
@@ -19,7 +39,7 @@ const positions = computed(
     new Map(
       rows.value.map(({ node, depth }, index) => [
         node.spanId,
-        { x: 30 + Math.min(depth, 4) * 170, y: 35 + index * 65 },
+        { x: 30 + Math.min(depth, 4) * 210, y: 35 + index * 65 },
       ]),
     ),
 )
@@ -53,12 +73,28 @@ function toggleGroup(category: string) {
   if (expandedCategories.value.has(category)) expandedCategories.value.delete(category)
   else expandedCategories.value.add(category)
 }
+function toggleNode(id: string) {
+  if (!expandedNodes.value.has(id)) {
+    expandedNodes.value.add(id)
+    return
+  }
+  const pending = [id]
+  const seen = new Set<string>()
+  while (pending.length) {
+    const descendant = pending.pop()!
+    if (seen.has(descendant)) continue
+    seen.add(descendant)
+    expandedNodes.value.delete(descendant)
+    pending.push(...(hierarchy.value.children.get(descendant) ?? []))
+  }
+}
 </script>
 <template>
   <section class="panel">
     <h3>实际调用与依赖</h3>
     <p class="muted small">
       实线：嵌套调用；虚线：执行依赖。节点按登记序号排列，序号不代表并行执行顺序。点击节点查看输入、输出和耗时。
+      默认仅显示最顶层节点，点击旁边的加号展开一层子节点，点击减号收起全部后代节点。
     </p>
     <p v-if="graph.incomplete" class="inline-error">
       运行图不完整：可能仍在执行、等待写入、记录缺失或被截断。不能据此认定全部步骤完成。
@@ -103,24 +139,45 @@ function toggleGroup(category: string) {
           v-for="{ node } in rows"
           :key="node.spanId"
           :transform="`translate(${positions.get(node.spanId)!.x}, ${positions.get(node.spanId)!.y - 20})`"
-          tabindex="0"
-          role="button"
-          :aria-label="'查看节点 ' + node.name"
-          :aria-pressed="selectedId === node.spanId"
-          @click="selectedId = node.spanId"
-          @keydown.enter="selectedId = node.spanId"
-          @keydown.space.prevent="selectedId = node.spanId"
         >
-          <rect
-            width="150"
-            height="40"
-            rx="8"
-            :fill="selectedId === node.spanId ? '#d5e9e1' : '#f3f6f3'"
-            stroke="#7c9691"
-          />
-          <text x="8" y="16" font-size="11">{{ node.name.slice(0, 20) }}</text>
-          <text x="8" y="31" font-size="10">{{ node.type }} · {{ node.status }}</text>
-          <title>{{ node.spanId }} · {{ node.name }}</title>
+          <g
+            class="run-graph-node"
+            tabindex="0"
+            role="button"
+            :aria-label="'查看节点 ' + node.name"
+            :aria-pressed="selectedId === node.spanId"
+            @click="selectedId = node.spanId"
+            @keydown.enter="selectedId = node.spanId"
+            @keydown.space.prevent="selectedId = node.spanId"
+          >
+            <rect
+              width="150"
+              height="40"
+              rx="8"
+              :fill="selectedId === node.spanId ? '#d5e9e1' : '#f3f6f3'"
+              stroke="#7c9691"
+            />
+            <text x="8" y="16" font-size="11">{{ node.name.slice(0, 20) }}</text>
+            <text x="8" y="31" font-size="10">{{ node.type }} · {{ node.status }}</text>
+            <title>{{ node.spanId }} · {{ node.name }}</title>
+          </g>
+          <g
+            v-if="hierarchy.children.has(node.spanId)"
+            class="run-graph-toggle"
+            transform="translate(154, -2)"
+            tabindex="0"
+            role="button"
+            :aria-label="`${expandedNodes.has(node.spanId) ? '收起' : '展开'} ${node.name}的子节点`"
+            :aria-expanded="expandedNodes.has(node.spanId)"
+            @click.stop="toggleNode(node.spanId)"
+            @keydown.enter.stop.prevent="toggleNode(node.spanId)"
+            @keydown.space.stop.prevent="toggleNode(node.spanId)"
+          >
+            <rect class="toggle-hit-area" width="44" height="44" rx="8" />
+            <rect class="toggle-icon" x="10" y="10" width="24" height="24" rx="5" />
+            <path d="M 16 22 H 28" />
+            <path v-if="!expandedNodes.has(node.spanId)" d="M 22 16 V 28" />
+          </g>
         </g>
       </svg>
     </div>
@@ -156,7 +213,7 @@ function toggleGroup(category: string) {
         </span>
         <span class="timeline-group-duration small">
           {{ group.unknownCount ? '已知耗时' : '总耗时' }}
-          {{ group.totalDuration === null ? '未知' : group.totalDuration + ' ms' }}
+          {{ formatDuration(group.totalDuration) }}
           <span v-if="group.unknownCount" class="muted">
             · {{ group.unknownCount }} 个耗时未知
           </span>
@@ -170,7 +227,7 @@ function toggleGroup(category: string) {
               <span :class="{ unfinished: !node.endedAt }" :style="timeline(node)" />
             </div>
             <span class="timeline-node-duration small">
-              {{ duration(node) === null ? '未知' : duration(node) + ' ms' }}
+              {{ formatDuration(duration(node)) }}
             </span>
           </div>
         </div>
@@ -201,7 +258,7 @@ function toggleGroup(category: string) {
       </p>
       <p>
         开始 {{ dateTime(selected.startedAt) }} · 结束 {{ dateTime(selected.endedAt) }} · 耗时
-        {{ duration(selected) ?? '未知' }} ms
+        {{ formatDuration(duration(selected)) }}
       </p>
       <p>
         输入 Token {{ selected.inputTokens ?? '未知' }} · 输出 Token
@@ -281,8 +338,35 @@ function toggleGroup(category: string) {
 .timeline-group-details {
   padding: 0 8px 8px;
 }
-.run-graph g:focus-visible rect {
+.timeline-row {
+  grid-template-columns: minmax(80px, 180px) minmax(60px, 1fr) minmax(170px, auto);
+}
+.run-graph-toggle .toggle-hit-area {
+  fill: transparent;
+}
+.run-graph-toggle .toggle-icon {
+  fill: var(--color-surface-soft);
+  stroke: var(--color-primary);
+}
+.run-graph-toggle path {
+  stroke: var(--color-primary);
+  stroke-width: 2px;
+  pointer-events: none;
+}
+.run-graph-toggle:hover .toggle-hit-area {
+  fill: var(--color-primary-soft);
+}
+.run-graph-node:focus-visible rect,
+.run-graph-toggle:focus-visible .toggle-icon {
   stroke: #28745f;
   stroke-width: 3px;
+}
+@media (max-width: 640px) {
+  .timeline-row {
+    grid-template-columns: minmax(80px, 1fr) minmax(60px, 1fr);
+  }
+  .timeline-node-duration {
+    grid-column: 1 / -1;
+  }
 }
 </style>

@@ -4,11 +4,76 @@ vi.mock('@/shared/ui/StatusBadge.vue', () => ({
 }))
 import { mount } from '@vue/test-utils'
 import RunGraph from '@/features/runs/components/RunGraph.vue'
-import { timelineGroups } from '@/features/runs/model'
+import { nodeHierarchy, timelineGroups } from '@/features/runs/model'
+import { formatDuration } from '@/shared/lib/format'
 import { graphSchema } from '@/shared/api/contracts/backend'
 import { graph } from '../stageFixtures'
 
 describe('run node details', () => {
+  it('formats elapsed times with hours, minutes, seconds and milliseconds', () => {
+    expect(formatDuration(3723004)).toBe('1小时2分钟3秒4毫秒')
+    expect(formatDuration(3600000)).toBe('1小时0分钟0秒0毫秒')
+    expect(formatDuration(60000)).toBe('0小时1分钟0秒0毫秒')
+    expect(formatDuration(0)).toBe('0小时0分钟0秒0毫秒')
+    expect(formatDuration(125)).toBe('0小时0分钟0秒125毫秒')
+    for (const value of [null, undefined, NaN, -1]) expect(formatDuration(value)).toBe('未知')
+  })
+  it('keeps missing-parent branches and cyclic data reachable', () => {
+    const node = graph.nodes[0]!
+    const hierarchy = nodeHierarchy([
+      { ...node, spanId: 'orphan', parentSpanId: 'missing' },
+      { ...node, spanId: 'child', parentSpanId: 'orphan' },
+      { ...node, spanId: 'a', parentSpanId: 'b' },
+      { ...node, spanId: 'b', parentSpanId: 'a' },
+      { ...node, spanId: 'self', parentSpanId: 'self' },
+    ])
+    expect(hierarchy.roots).toEqual(['orphan', 'a', 'self'])
+    expect(hierarchy.children.get('orphan')).toEqual(['child'])
+    expect(hierarchy.children.get('a')).toEqual(['b'])
+  })
+  it('expands one level, collapses the entire branch and preserves other branches', async () => {
+    const value = structuredClone(graph)
+    value.nodes.push(
+      { ...value.nodes[0]!, spanId: 'second-root', name: '另一运行', sequence: 4 },
+      { ...value.nodes[1]!, spanId: 'other-child', parentSpanId: 'second-root', sequence: 5 },
+      {
+        ...value.nodes[1]!,
+        spanId: 'nested',
+        name: '嵌套调用',
+        parentSpanId: 'model',
+        sequence: 6,
+      },
+      { ...value.nodes[1]!, spanId: 'leaf', name: '叶节点', parentSpanId: 'nested', sequence: 7 },
+    )
+    value.edges.push({ from: 'model', to: 'nested', kind: 'CALL' })
+    const wrapper = mount(RunGraph, { props: { graph: value } })
+    const visibleNames = () =>
+      wrapper.findAll('.run-graph-node').map((node) => node.attributes('aria-label'))
+    expect(visibleNames()).toEqual(['查看节点 ' + value.nodes[0]!.name, '查看节点 另一运行'])
+    expect(wrapper.findAll('.run-graph > path')).toHaveLength(0)
+    await wrapper.get('.run-graph-toggle').trigger('click')
+    expect(wrapper.get('.run-graph-toggle').attributes('aria-expanded')).toBe('true')
+    expect(wrapper.find('[aria-label="节点详情"]').exists()).toBe(false)
+    expect(visibleNames()).toHaveLength(4)
+    expect(wrapper.findAll('.run-graph > path')).toHaveLength(2)
+    await wrapper.get('[aria-label="展开 模型调用的子节点"]').trigger('keydown', { key: 'Enter' })
+    expect(visibleNames()).toContain('查看节点 嵌套调用')
+    expect(visibleNames()).not.toContain('查看节点 叶节点')
+    await wrapper.get('[aria-label="展开 嵌套调用的子节点"]').trigger('keydown', { key: ' ' })
+    expect(visibleNames()).toContain('查看节点 叶节点')
+    await wrapper.get('[aria-label="展开 另一运行的子节点"]').trigger('click')
+    await wrapper.get('.run-graph-toggle').trigger('click')
+    expect(visibleNames()).toHaveLength(3)
+    await wrapper.get('.run-graph-toggle').trigger('click')
+    expect(wrapper.get('[aria-label="展开 模型调用的子节点"]').attributes('aria-expanded')).toBe(
+      'false',
+    )
+    expect(visibleNames()).not.toContain('查看节点 嵌套调用')
+    expect(visibleNames()).toHaveLength(5)
+    await wrapper.setProps({ graph: { ...value, run: { ...value.run, traceId: 'new-trace' } } })
+    expect(visibleNames()).toHaveLength(2)
+    wrapper.unmount()
+  })
   it('groups workflow categories and span types while preserving unknown and zero durations', () => {
     const node = graph.nodes[0]!
     const groups = timelineGroups([
@@ -73,15 +138,15 @@ describe('run node details', () => {
     const category = wrapper.findAll('.timeline-group-toggle')[3]!
     expect(category.text()).toContain('read')
     expect(category.text()).toContain('3 个节点')
-    expect(category.text()).toContain('已知耗时 4000 ms')
+    expect(category.text()).toContain('已知耗时 0小时0分钟4秒0毫秒')
     expect(category.text()).toContain('1 个耗时未知')
     expect(category.attributes('aria-expanded')).toBe('false')
     await category.trigger('click')
     expect(category.attributes('aria-expanded')).toBe('true')
     expect(wrapper.findAll('.timeline-row')).toHaveLength(3)
     expect(wrapper.findAll('.timeline-node-duration').map((row) => row.text())).toEqual([
-      '2000 ms',
-      '2000 ms',
+      '0小时0分钟2秒0毫秒',
+      '0小时0分钟2秒0毫秒',
       '未知',
     ])
     await wrapper.get('.timeline-row .node-link').trigger('click')
@@ -116,15 +181,16 @@ describe('run node details', () => {
         },
       },
     })
-    await wrapper.findAll('g[role="button"]')[1]!.trigger('keydown', { key: 'Enter' })
+    await wrapper.get('.run-graph-toggle').trigger('click')
+    await wrapper.findAll('.run-graph-node')[1]!.trigger('keydown', { key: 'Enter' })
     const panel = wrapper.get('[aria-label="节点详情"]')
     expect(panel.text()).toContain('耗时')
-    expect(panel.text()).toContain('2000 ms')
+    expect(panel.text()).toContain('0小时0分钟2秒0毫秒')
     expect(panel.get('[aria-label="节点输入"] pre').text()).toContain('<img')
     expect(panel.find('img').exists()).toBe(false)
     expect(panel.get('[aria-label="节点输出"]').text()).toContain('已截断')
-    expect(wrapper.findAll('g[role="button"]')[1]!.attributes('aria-pressed')).toBe('true')
-    await wrapper.findAll('g[role="button"]')[0]!.trigger('keydown', { key: ' ' })
+    expect(wrapper.findAll('.run-graph-node')[1]!.attributes('aria-pressed')).toBe('true')
+    await wrapper.findAll('.run-graph-node')[0]!.trigger('keydown', { key: ' ' })
     expect(wrapper.get('[aria-label="节点详情"]').text()).toContain('未记录内容')
     wrapper.unmount()
   })
@@ -139,9 +205,10 @@ describe('run node details', () => {
         },
       },
     })
-    await wrapper.findAll('g[role="button"]')[1]!.trigger('click')
+    await wrapper.get('.run-graph-toggle').trigger('click')
+    await wrapper.findAll('.run-graph-node')[1]!.trigger('click')
     expect(wrapper.get('[aria-label="节点详情"]').text()).toContain('内容已隐藏')
-    expect(wrapper.get('[aria-label="节点详情"]').text()).toContain('2000 ms')
+    expect(wrapper.get('[aria-label="节点详情"]').text()).toContain('0小时0分钟2秒0毫秒')
     wrapper.unmount()
   })
 })

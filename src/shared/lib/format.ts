@@ -14,3 +14,8 @@ export function downloadText(text: string, filename: string, mime: string) {
   a.remove()
   URL.revokeObjectURL(url)
 }
+export function formatDuration(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value) || value < 0) return '未知'
+  const ms = Math.floor(value)
+  return `${Math.floor(ms / 3600000)}小时${Math.floor((ms % 3600000) / 60000)}分钟${Math.floor((ms % 60000) / 1000)}秒${ms % 1000}毫秒`
+}
