@@ -5,14 +5,23 @@ const live = process.argv.some(
   (arg, index, args) =>
     arg === '--project=live' || (arg === '--project' && args[index + 1] === 'live'),
 )
+const outputName = live
+  ? process.argv.some((arg) => arg.includes('live-v3-readback'))
+    ? 'live-v3-readback'
+    : 'live'
+  : 'contract'
 const port = live ? 5173 : 4173
 const baseURL = 'http://127.0.0.1:' + port
 export default defineConfig({
   testDir: './tests/e2e',
+  outputDir: './test-results/' + outputName,
   timeout: 30_000,
   retries: 0,
   workers: 1,
-  reporter: [['list'], ['html', { open: 'never' }]],
+  reporter: [
+    ['list'],
+    ['html', { open: 'never', outputFolder: 'playwright-report/' + outputName }],
+  ],
   use: {
     baseURL,
     headless: true,

@@ -1,5 +1,9 @@
 <script setup lang="ts">
+import { tasksApi } from '@/features/tasks/api'
+import type { DocumentSnapshot } from '@/shared/api/contracts/backend'
 import { ref, onMounted, onScopeDispose, computed } from 'vue'
+import { usePoll } from '@/shared/lib/usePoll'
+import { errorMessage } from '@/shared/api/errors'
 import { useRoute } from 'vue-router'
 import { approvalsApi } from '../api'
 import type { ApprovalSnapshot } from '@/shared/api/contracts/backend'
@@ -10,16 +14,41 @@ import PageHeader from '@/shared/ui/PageHeader.vue'
 import Feedback from '@/shared/ui/Feedback.vue'
 import MarkdownView from '@/shared/ui/MarkdownView.vue'
 import StatusBadge from '@/shared/ui/StatusBadge.vue'
+const savedDocument = ref<DocumentSnapshot | null>(null)
 const route = useRoute(),
   approval = ref<ApprovalSnapshot | null>(null),
   now = ref(Date.now())
 const { busy, error, notice, run } = useAction()
+const savePoll = usePoll(
+  async () => {
+    await fetchApproval()
+    return (
+      !!savedDocument.value &&
+      savedDocument.value.ingestionStatus !== 'READY' &&
+      savedDocument.value.ingestionStatus !== 'FAILED'
+    )
+  },
+  (e) => {
+    error.value = errorMessage(e)
+  },
+  () => 3000,
+)
+function observeSave() {
+  if (
+    approval.value?.status === 'APPROVED' &&
+    savedDocument.value &&
+    savedDocument.value.ingestionStatus !== 'READY' &&
+    savedDocument.value.ingestionStatus !== 'FAILED'
+  )
+    savePoll.start()
+}
 const timer = setInterval(() => {
   now.value = Date.now()
 }, 1000)
 onScopeDispose(() => {
   clearInterval(timer)
   approval.value = null
+  savedDocument.value = null
 })
 const expired = computed(() =>
   approval.value ? Date.parse(approval.value.expiresAt) <= now.value : false,
@@ -32,15 +61,27 @@ const remaining = computed(() =>
 async function fetchApproval() {
   try {
     approval.value = await approvalsApi.get(String(route.params.approvalId))
+    if (route.query.compilationSave === '1') {
+      savedDocument.value = null
+      savedDocument.value = (
+        await tasksApi.compilationSave(String(route.params.approvalId))
+      ).document
+    }
   } catch (e) {
-    if (e instanceof ApiError && [401, 403, 404].includes(e.status)) approval.value = null
+    if (e instanceof ApiError && [401, 403, 404].includes(e.status)) {
+      approval.value = null
+      savedDocument.value = null
+    }
     throw e
   }
 }
 function refresh() {
   void run(async () => {
+    savePoll.stop()
     approval.value = null
+    savedDocument.value = null
     await fetchApproval()
+    observeSave()
   })
 }
 onMounted(refresh)
@@ -58,6 +99,8 @@ function decide(approved: boolean) {
       throw new Error('当前记录不可决定，请重新准备笔记')
     try {
       approval.value = await approvalsApi.decide(approval.value.approvalId, approved)
+      await fetchApproval()
+      observeSave()
     } catch (e) {
       try {
         await fetchApproval()
@@ -81,6 +124,24 @@ function decide(approved: boolean) {
         approval.approvalId
       }}</span>
       <h2>{{ approval.title }}</h2>
+      <p v-if="savedDocument">
+        生成资料：{{ savedDocument.ingestionStatus }} · 激活代次
+        {{ savedDocument.activeProcessingRevision ?? '尚未激活' }}。{{
+          savedDocument.ingestionStatus === 'READY' &&
+          savedDocument.activeProcessingRevision !== null
+            ? '可以选择该文档自测。'
+            : '请稍后重新核验索引状态。'
+        }}
+      </p>
+      <RouterLink
+        v-if="
+          savedDocument?.ingestionStatus === 'READY' &&
+          savedDocument.activeProcessingRevision !== null
+        "
+        :to="'/tasks?documentId=' + savedDocument.id"
+        >使用已保存文档发起自测 →</RouterLink
+      >
+      <p v-if="savePoll.expired.value">索引观察窗口已结束，可重新核验后继续观察。</p>
       <p class="muted">
         目标知识库 #{{ approval.knowledgeBaseId }} · 库版本 {{ approval.targetVersion }}
       </p>

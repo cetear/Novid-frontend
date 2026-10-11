@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocumentOrigin from '../components/DocumentOrigin.vue'
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuth } from '@/features/auth'
@@ -85,6 +86,11 @@ function assign(value: DocumentContent) {
           : '正文版本已变化，已停止跟踪旧版本的重处理请求。'
     }
   }
+}
+function invalidateOrigin(reason: unknown) {
+  clearPrivateContent()
+  error.value = errorMessage(reason)
+  notice.value = '资料当前不可访问，已清理内容和来源关系。'
 }
 function clearPrivateContent() {
   content.value = null
@@ -588,5 +594,12 @@ function locate(start: number, end: number) {
       ></template
     >
   </el-dialog>
+  <DocumentOrigin
+    @invalidated="invalidateOrigin"
+    v-if="content"
+    :document-id="content.document.id"
+    :version="content.document.documentVersion"
+    :revision="content.document.activeProcessingRevision"
+  />
   <FeePanel v-if="owned && ingestion" kind="ingestions" :resource-id="ingestion.ingestionId" />
 </template>

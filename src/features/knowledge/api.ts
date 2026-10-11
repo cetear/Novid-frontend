@@ -1,3 +1,4 @@
+import { originSchema, participationSchema } from '@/shared/api/contracts/workflow'
 import { z } from 'zod'
 import { http } from '@/shared/api/transport'
 import {
@@ -28,6 +29,16 @@ export function scopeQuery(scope: ScopeRequest, page = 0, size = 20, statistics 
   return query.toString()
 }
 export const knowledgeApi = {
+  origin(id: number) {
+    return http().json(`/documents/${positiveId(id)}/origin`, originSchema)
+  },
+  compilations(id: number, page = 0) {
+    if (!Number.isSafeInteger(page) || page < 0) throw new Error('页码无效')
+    return http().json(
+      `/documents/${positiveId(id)}/compilations?page=${page}&size=20`,
+      z.array(participationSchema),
+    )
+  },
   bases(scope: ScopeRequest, page = 0, signal?: AbortSignal) {
     return http().json(`/knowledge-bases?${scopeQuery(scope, page)}`, z.array(baseSchema), {
       signal,

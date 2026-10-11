@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { id } from './backend'
-import { outputPlanSchema } from './contentPlan'
+import { learningPlanSchema, coverageSchema } from './contentPlan'
 
 const offset = z.number().int().nonnegative().refine(Number.isSafeInteger)
 export const quizOptionsSchema = z
@@ -38,7 +38,12 @@ export const learningCitationSchema = z.object({
   quote: z.string(),
 })
 export const learningResultSchema = z.object({
-  contentPlan: outputPlanSchema,
+  contentPlan: learningPlanSchema.refine((p) =>
+    p.taskType === 'QUIZ_GENERATION'
+      ? p.quiz !== null && p.compilation === null
+      : p.compilation !== null && p.quiz === null,
+  ),
+  coverageReport: z.array(coverageSchema),
   workflowId: z.string(),
   title: z.string(),
   quiz: z
@@ -64,6 +69,7 @@ export const learningResultSchema = z.object({
         z.object({
           id: z.string(),
           title: z.string(),
+          parentId: z.string(),
           groups: z.array(
             z.object({
               id: z.string(),

@@ -1,3 +1,6 @@
+import { z } from 'zod'
+import { readPlanSchema, compilationSaveSchema } from '@/shared/api/contracts/workflow'
+import { packageStatusSchema } from '@/shared/api/contracts/contentPlan'
 import { http } from '@/shared/api/transport'
 import { taskSchema, type ScopeRequest } from '@/shared/api/contracts/backend'
 import { contentPlanSchema } from '@/shared/api/contracts/contentPlan'
@@ -94,6 +97,9 @@ export const tasksApi = {
           throw new Error('请核对人物、声音、场景、镜头数与时长')
       }
     }
+    if (new Set(documentIds).size !== documentIds.length) throw new Error('文档不能重复')
+    if (taskType === 'QUIZ_GENERATION' && documentIds.length !== 1)
+      throw new Error('自测只能选择一份资料；多份资料请先整编保存')
     if (documentIds.length < 1 || documentIds.length > 6) throw new Error('请选择 1～6 个文档')
     if (scope.mode === 'SELECTED' && !scope.knowledgeBaseIds.length)
       throw new Error('请先选择知识库范围')
@@ -145,6 +151,30 @@ export const tasksApi = {
     return http().optionalJson(`/tasks/${positiveId(id)}/content-plan`, contentPlanSchema, {
       signal,
     })
+  },
+  readPlan(id: number, signal?: AbortSignal) {
+    return http().optionalJson(`/tasks/${positiveId(id)}/read-plan`, readPlanSchema, { signal })
+  },
+  workPackages(id: number, page = 0, signal?: AbortSignal) {
+    if (!Number.isSafeInteger(page) || page < 0) throw new Error('页码无效')
+    return http().json(
+      `/tasks/${positiveId(id)}/work-packages?page=${page}&size=20`,
+      z.array(packageStatusSchema),
+      { signal },
+    )
+  },
+  prepareCompilation(id: number, knowledgeBaseId: number, key: string) {
+    return http().json(`/tasks/${positiveId(id)}/compilation-save/prepare`, compilationSaveSchema, {
+      method: 'POST',
+      key,
+      json: { knowledgeBaseId: positiveId(knowledgeBaseId) },
+    })
+  },
+  compilationSave(approvalId: string) {
+    return http().json(
+      `/compilation-saves/${encodeURIComponent(approvalId)}`,
+      compilationSaveSchema,
+    )
   },
   result(id: number, signal?: AbortSignal) {
     return http().json(`/tasks/${positiveId(id)}/result`, learningResultSchema, { signal })

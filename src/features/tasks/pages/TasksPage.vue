@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, watch, computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, watch, computed, onMounted, nextTick } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { useAuth } from '@/features/auth'
 import { ScopePicker, useKnowledgeScope, knowledgeApi } from '@/features/knowledge'
 import { tasksApi } from '../api'
@@ -26,13 +26,20 @@ import type {
 const auth = useAuth(),
   scope = useKnowledgeScope(),
   known = useKnownTasks(),
-  router = useRouter()
+  router = useRouter(),
+  route = useRoute()
 const topic = ref(''),
   remarks = ref(''),
   taskType = ref<TaskType>('QUIZ_GENERATION'),
   selected = ref<number[]>([]),
   page = ref(0),
   knownId = ref('')
+const selectedOne = computed({
+  get: () => selected.value[0],
+  set: (id: number | undefined) => {
+    selected.value = id === undefined ? [] : [id]
+  },
+})
 const mediaTask = computed(() => ['NOTES_PPT', 'NOTES_VIDEO'].includes(taskType.value))
 const strategy = computed(() =>
   taskType.value === 'NOTES_VIDEO' ? ('PLANNED' as const) : ('FIXED' as const),
@@ -93,6 +100,7 @@ const fingerprint = computed(() =>
   }),
 )
 watch(taskType, (value) => {
+  if (value === 'QUIZ_GENERATION' && selected.value.length > 1) selected.value = []
   if (value === 'NOTES_VIDEO')
     void loadCatalogs(async (signal) => {
       const [catalogs, capabilities] = await Promise.all([
@@ -123,6 +131,25 @@ watch(
   },
   { immediate: true },
 )
+onMounted(() => {
+  if (route.query.documentId === undefined) return
+  void run(async () => {
+    const value = await knowledgeApi.document(positiveId(route.query.documentId))
+    if (
+      value.document.ingestionStatus !== 'READY' ||
+      value.document.activeProcessingRevision === null
+    )
+      throw new Error('生成资料尚未就绪，请等待入库完成')
+    taskType.value = 'QUIZ_GENERATION'
+    scope.set({
+      mode: 'SELECTED',
+      knowledgeBaseIds: [value.document.knowledgeBaseId],
+      ownerUserId: null,
+    })
+    await nextTick()
+    selected.value = [value.document.id]
+  })
+})
 function create() {
   void run(async () => {
     const frozen = { ...scope.scope, knowledgeBaseIds: [...scope.scope.knowledgeBaseIds] }
@@ -342,14 +369,40 @@ function open() {
         </el-form-item>
         <div class="section-title">
           <h3>来源文档</h3>
-          <span class="muted small">已选 {{ selected.length }}/6</span>
+          <span class="muted small"
+            >已选 {{ selected.length }}/{{ taskType === 'QUIZ_GENERATION' ? 1 : 6 }}</span
+          >
         </div>
-        <el-checkbox-group v-model="selected" class="document-choices" :disabled="busy"
+        <el-radio-group
+          v-if="taskType === 'QUIZ_GENERATION'"
+          v-model="selectedOne"
+          class="document-choices"
+          :disabled="busy"
+          ><div v-for="document in documents || []" :key="document.id" class="document-choice">
+            <el-radio
+              :value="document.id"
+              :aria-label="'选择文档 ' + document.title"
+              :disabled="
+                document.ingestionStatus !== 'READY' || document.activeProcessingRevision === null
+              "
+            />
+            <div>
+              <strong>{{ document.title }}</strong
+              ><small class="muted">#{{ document.id }} · v{{ document.documentVersion }}</small>
+            </div>
+            <StatusBadge :status="document.ingestionStatus" /></div
+        ></el-radio-group>
+        <el-checkbox-group v-else v-model="selected" class="document-choices" :disabled="busy"
           ><div v-for="document in documents || []" :key="document.id" class="document-choice">
             <el-checkbox
               :value="document.id"
               :aria-label="'选择文档 ' + document.title"
-              :disabled="selected.length >= 6 && !selected.includes(document.id)"
+              :disabled="
+                (taskType !== 'NOTES_VIDEO' &&
+                  (document.ingestionStatus !== 'READY' ||
+                    document.activeProcessingRevision === null)) ||
+                (selected.length >= 6 && !selected.includes(document.id))
+              "
             />
             <div>
               <strong>{{ document.title }}</strong
@@ -370,9 +423,9 @@ function open() {
           选中文档 ID：{{ selected.join(', ') }}（可跨当前分页）
         </p>
         <p class="muted small">
-          未 READY 或没有激活代次的文档可以登记任务，但执行会因 INDEX_NOT_READY
-          失败。资料任务原文容量由服务端策略决定，默认合计最多 1,000,000 UTF-8
-          字节；超限需缩小范围。
+          自测只选择一份资料，多份资料请先整编并保存，再对生成文档自测。资料需 READY
+          且有激活代次，创建时由服务端再次核验。资料任务原文容量由服务端策略决定，默认合计最多
+          1,000,000 UTF-8 字节；超限需缩小范围。
         </p>
         <el-alert
           v-if="uncertain"

@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import WorkflowDetails from '../components/WorkflowDetails.vue'
+import CompilationSave from '../components/CompilationSave.vue'
 import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { tasksApi } from '../api'
@@ -161,6 +163,9 @@ function readLearning() {
 function invalidateLearning(reason: unknown) {
   learning.value = null
   report.value = ''
+  plan.value = null
+  task.value = null
+  poll.stop()
   error.value = errorMessage(reason)
   notice.value = '来源当前不可访问或已变化，已清理学习结果，请重新核验。'
 }
@@ -287,6 +292,13 @@ function invalidateLearning(reason: unknown) {
     </div>
     <TaskMedia v-if="isMedia" :task="task" @changed="refresh" />
     <LearningResultView v-if="learning" :result="learning" @invalidated="invalidateLearning" />
+    <CompilationSave
+      v-if="learning && task.taskType === 'KNOWLEDGE_COMPILATION'"
+      :task-id="task.taskId" />
+    <WorkflowDetails
+      v-if="isLearning || task.taskType === 'NOTES_PPT'"
+      :task-id="task.taskId"
+      @invalidated="invalidateLearning" />
     <FeePanel kind="tasks" :resource-id="task.taskId" />
     <section v-if="!isLearning" class="panel">
       <h3>阅读覆盖</h3>

@@ -18,7 +18,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "pnpm build && playwright test --project=contract",
-    "test:e2e:live": "playwright test --project=live",
+    "test:e2e:live": "playwright test tests/e2e/live-v3.spec.ts --project=live",
     "test:backend": "node scripts/check-backend.mjs",
     "docs:check": "node scripts/check-doc-links.mjs"
   },

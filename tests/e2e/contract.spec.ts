@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { mockBackend, login } from './mockBackend'
 import { session, modernTask, graph, ingestion, sectionPage } from '../stageFixtures'
-import { ai } from '../fixtures'
+import { ai, document as sampleDocument } from '../fixtures'
 import { fee, mediaPreview, presentation, videoCapability } from '../mediaFixtures'
 import { createHash } from 'node:crypto'
 import { learningTask, quizResult, compilationResult, contentPlan } from '../learningFixtures'
@@ -27,14 +27,14 @@ test('资料内容计划：自动默认、204、动态数量与权限撤销清�
   await page.getByRole('link', { name: '学习与制作', exact: true }).click()
   await expect(page.getByLabel('题目数量', { exact: true })).toHaveValue('0')
   await expect(page.getByLabel('主题', { exact: true })).toHaveCount(0)
-  await page.locator('.document-choice .el-checkbox').click()
+  await page.locator('.document-choice .el-checkbox, .document-choice .el-radio').click()
   await page.getByRole('button', { name: '创建学习任务', exact: false }).click()
   await expect(page.getByText('内容计划尚未生成或接受', { exact: false })).toBeVisible()
   phase = 'ready'
   await page.getByRole('button', { name: '查询计划' }).click()
   await expect(page.locator('.content-plan')).toContainText('已完成内容单元 1 / 1')
   await expect(page.locator('.content-plan')).toContainText('计划 1 题')
-  await page.getByText('查看主题、内容单元与取舍', { exact: true }).click()
+  await page.getByText('查看目录、配额与取舍', { exact: true }).click()
   await expect(page.locator('.content-plan')).toContainText('item-1')
   await page.setViewportSize({ width: 375, height: 812 })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
@@ -65,7 +65,7 @@ test('学习创建：结果不确定时保留幂等键，选项变更使用新�
   await login(page)
   await page.getByRole('link', { name: '学习与制作', exact: true }).click()
   await page.getByLabel('备注（可选）', { exact: true }).fill('稳定创建')
-  await page.locator('.document-choice .el-checkbox').click()
+  await page.locator('.document-choice .el-checkbox, .document-choice .el-radio').click()
   await page.getByRole('button', { name: '创建学习任务', exact: false }).click()
   await expect(page.getByRole('button', { name: '使用原幂等键重新确认' })).toBeVisible()
   expect(submitted).toHaveLength(1)
@@ -99,7 +99,7 @@ test('学习自测：六阶段、暂停恢复、答案折叠、绝对引用定�
   await page.getByRole('link', { name: '学习与制作', exact: true }).click()
   await expect(page.getByText('常见问题 FAQ', { exact: true })).toHaveCount(0)
   await page.getByLabel('备注（可选）', { exact: true }).fill('自测验证知识')
-  await page.locator('.document-choice .el-checkbox').click()
+  await page.locator('.document-choice .el-checkbox, .document-choice .el-radio').click()
   await page.getByRole('button', { name: '创建学习任务', exact: false }).click()
   await expect(page).toHaveURL(/\/tasks\/51/)
   await expect(page.locator('.task-facts')).toContainText('/ 6')
@@ -201,7 +201,7 @@ test('资料整编：完整选项、目录分组与正文引用，未发布错�
   await page.getByRole('link', { name: '学习与制作', exact: true }).click()
   await page.getByText('资料整编', { exact: true }).click()
   await page.getByLabel('备注（可选）', { exact: true }).fill('整编复习资料')
-  await page.locator('.document-choice .el-checkbox').click()
+  await page.locator('.document-choice .el-checkbox, .document-choice .el-radio').click()
   await page.getByRole('button', { name: '创建学习任务', exact: false }).click()
   await page.getByRole('button', { name: '核验并查看学习结果' }).click()
   await expect(page.getByText('WORKFLOW_RESULT_UNAVAILABLE', { exact: false })).toBeVisible()
@@ -648,7 +648,7 @@ test('视频规划：真实目录、单片 API 参数、有台词不能无声、
     await page.getByRole('option', { name: new RegExp(option!) }).click()
   }
   await page.getByLabel('主题', { exact: true }).fill('演示凝结现象')
-  await page.locator('.document-choice .el-checkbox').click()
+  await page.locator('.document-choice .el-checkbox, .document-choice .el-radio').click()
   await page.getByRole('button', { name: '创建媒体任务' }).click()
   expect(creates).toEqual([
     expect.objectContaining({
@@ -1138,4 +1138,159 @@ test('新版运行：实际节点、依赖、未知费用与上一执行', async
   await page.screenshot({ path: 'var/screenshots/run-timeline-mobile.png', fullPage: true })
   await page.setViewportSize({ width: 1440, height: 1000 })
   await page.screenshot({ path: 'var/screenshots/run-graph.png', fullPage: true })
+})
+
+test('V3 自测单选资料与未就绪保护', async ({ page }) => {
+  await mockBackend(page)
+  await page.route('**/api/v1/documents?*', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([
+        sampleDocument,
+        { ...sampleDocument, id: 102, title: '第二份资料' },
+        {
+          ...sampleDocument,
+          id: 103,
+          title: '未入库资料',
+          ingestionStatus: 'RECEIVED',
+          activeProcessingRevision: null,
+        },
+      ]),
+    }),
+  )
+  await login(page)
+  await page.getByRole('link', { name: '学习与制作', exact: true }).click()
+  await page.getByRole('radio', { name: '选择文档 验证指南', exact: true }).locator('..').click()
+  await page.getByRole('radio', { name: '选择文档 第二份资料', exact: true }).locator('..').click()
+  await expect(
+    page.getByRole('radio', { name: '选择文档 验证指南', exact: true }),
+  ).not.toBeChecked()
+  await expect(page.getByRole('radio', { name: '选择文档 第二份资料', exact: true })).toBeChecked()
+  await expect(page.getByRole('radio', { name: '选择文档 未入库资料', exact: true })).toBeDisabled()
+  await expect(page.getByText('已选 1/1', { exact: false })).toBeVisible()
+})
+
+test('V3 整编保存：确认前无文档、实际索引就绪后带入单文档自测', async ({ page }) => {
+  const state = await mockBackend(page)
+  state.task = {
+    ...learningTask,
+    taskType: 'KNOWLEDGE_COMPILATION',
+    status: 'SUCCEEDED',
+    artifactId: 83,
+  }
+  await page.route('**/api/v1/tasks/51/content-plan', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ...contentPlan, plan: compilationResult.contentPlan }),
+    }),
+  )
+  await page.route('**/api/v1/tasks/51/result', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(compilationResult),
+    }),
+  )
+  const keys: string[] = []
+  await page.route('**/api/v1/tasks/51/compilation-save/prepare', (route) => {
+    expect(route.request().postDataJSON()).toEqual({ knowledgeBaseId: 12 })
+    keys.push(route.request().headers()['idempotency-key']!)
+    if (keys.length === 1) return route.abort('failed')
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ approval: state.approval, document: null }),
+    })
+  })
+  let indexed = false
+  await page.route('**/api/v1/compilation-saves/approval-1', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        approval: state.approval,
+        document:
+          state.approval.status === 'APPROVED'
+            ? {
+                ...sampleDocument,
+                id: 102,
+                ingestionStatus: indexed ? 'READY' : 'RECEIVED',
+                activeProcessingRevision: indexed ? 1 : null,
+              }
+            : null,
+      }),
+    }),
+  )
+  await page.route('**/api/v1/documents/102', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        document: { ...sampleDocument, id: 102 },
+        text: '生成资料',
+        sourceDependencies: [],
+      }),
+    }),
+  )
+  await login(page)
+  await page.getByRole('link', { name: '学习与制作', exact: true }).click()
+  await page.getByLabel('已知任务 ID', { exact: true }).fill('51')
+  await page.getByRole('button', { name: '打开', exact: true }).click()
+  await page.getByRole('button', { name: '核验并查看学习结果' }).click()
+  await expect(page.getByRole('heading', { name: '保存整编为资料' })).toBeVisible()
+  await page.getByRole('button', { name: '加载目标知识库' }).click()
+  await page.getByRole('combobox', { name: '整编保存目标知识库' }).press('ArrowDown')
+  await page.getByRole('option', { name: '学习资料', exact: true }).click()
+  await page.getByRole('button', { name: '准备保存并核对' }).click()
+  await expect(page.getByRole('button', { name: '准备保存并核对' })).toBeEnabled()
+  await page.getByRole('button', { name: '准备保存并核对' }).click()
+  await expect(page).toHaveURL(/approvals\/approval-1\?compilationSave=1/)
+  await expect(page.getByRole('link', { name: '使用已保存文档发起自测 →' })).toHaveCount(0)
+  await page.getByRole('button', { name: '已核对，批准保存' }).click()
+  await expect(page.getByText('生成资料：RECEIVED', { exact: false })).toBeVisible()
+  await expect(page.getByRole('link', { name: '使用已保存文档发起自测 →' })).toHaveCount(0)
+  indexed = true
+  await expect(page.getByRole('link', { name: '使用已保存文档发起自测 →' })).toBeVisible({
+    timeout: 10000,
+  })
+  await page.getByRole('link', { name: '使用已保存文档发起自测 →' }).click()
+  await expect(page).toHaveURL(/tasks\?documentId=102/)
+  await expect(page.getByText('选中文档 ID：102', { exact: false })).toBeVisible()
+  expect(keys).toHaveLength(2)
+  expect(keys[1]).toBe(keys[0])
+})
+
+test('V3 执行诊断权限撤销后清理任务与计划', async ({ page }) => {
+  const state = await mockBackend(page)
+  state.task = { ...learningTask, status: 'PAUSED' }
+  await page.route('**/api/v1/tasks/51/content-plan', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(contentPlan),
+    }),
+  )
+  await page.route('**/api/v1/tasks/51/read-plan', (route) => route.fulfill({ status: 204 }))
+  await page.route('**/api/v1/tasks/51/work-packages?*', (route) =>
+    route.fulfill({
+      status: 403,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        code: 'ACCESS_DENIED',
+        message: '执行来源授权已撤销',
+        retryable: false,
+      }),
+    }),
+  )
+  await login(page)
+  await page.getByRole('link', { name: '学习与制作', exact: true }).click()
+  await page.getByLabel('已知任务 ID', { exact: true }).fill('51')
+  await page.getByRole('button', { name: '打开', exact: true }).click()
+  await expect(page.locator('.content-plan')).toBeVisible()
+  await page.getByRole('button', { name: '核验阅读与工作包' }).click()
+  await expect(page.getByText('执行来源授权已撤销', { exact: false })).toBeVisible()
+  await expect(page.locator('.content-plan')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '暂停', exact: true })).toHaveCount(0)
 })

@@ -1,41 +1,72 @@
 import type { LearningResult } from '@/shared/api/contracts/learning'
 import type { TaskSnapshot } from '@/shared/api/contracts/backend'
 import { task } from './fixtures'
-import type { OutputPlan, ContentPlanSnapshot } from '@/shared/api/contracts/contentPlan'
-export const quizPlan: OutputPlan = {
-  version: 1,
-  taskType: 'QUIZ_GENERATION',
+import type { ContentPlanSnapshot } from '@/shared/api/contracts/contentPlan'
+export const quizPlan = {
+  version: 3 as const,
+  taskType: 'QUIZ_GENERATION' as const,
   sourceHash: 'source-hash',
-  intent: {
-    title: '资料驱动验证自测',
-    themes: [{ id: 't1', title: '验证', purpose: '依据资料检验理解' }],
-    requirements: '',
-    reason: '资料包含一个验证知识点，选择一题覆盖。',
-    requestedUnits: '自动',
-  },
-  units: [
-    {
-      id: 'q1',
-      kind: 'QUESTION',
-      themeId: 't1',
-      title: '验证依据',
-      purpose: '检验理解',
-      relation: '',
-      imageMode: 'NONE',
-      imagePrompt: '',
-      itemIds: ['item-1'],
+  compilation: null,
+  quiz: {
+    intent: {
+      title: '资料驱动验证自测',
+      requirements: '',
+      reason: '资料包含一个验证知识点，选择一题覆盖。',
+      coveragePolicy: 'EVERY_CHAPTER',
+      requestedQuestions: 'AUTO',
+      focusChapterIds: [],
     },
-  ],
-  omissions: [],
+    difficulty: 'MEDIUM',
+    chapters: [
+      {
+        id: 'ch1',
+        parentId: '',
+        order: 0,
+        title: '验证',
+        origin: 'PARSED',
+        ranges: [],
+        itemIds: ['item-1'],
+      },
+    ],
+    objectives: [
+      {
+        id: 'o1',
+        primaryChapterId: 'ch1',
+        title: '验证依据',
+        cognition: '理解',
+        questionTypes: ['SINGLE_CHOICE'],
+        itemIds: ['item-1'],
+        priority: 1,
+        reason: '检验理解',
+        relatedChapterIds: [],
+      },
+    ],
+    quotas: [
+      { chapterId: 'ch1', minimum: 1, maximum: 1, weight: 1, allocated: 1, reason: '章节最低覆盖' },
+    ],
+    slots: [
+      {
+        id: 'q1',
+        primaryChapterId: 'ch1',
+        objectiveId: 'o1',
+        cognition: '理解',
+        type: 'SINGLE_CHOICE',
+        itemIds: ['item-1'],
+        relatedChapterIds: [],
+      },
+    ],
+    uncovered: [],
+  },
+  execution: { parts: [], packages: [], maximumPackages: 1024, maximumSplitDepth: 8 },
   counts: {
     questions: 1,
-    chapters: 0,
+    chapters: 1,
     sections: 0,
     contentSlides: 0,
     sourceSlides: 0,
     totalSlides: 0,
   },
-  requiredNodes: ['prepare', 'extract', 'organize', 'generate', 'review', 'publish'],
+  requiredNodes: ['accepted_q1'],
   estimatedTurns: 4,
   estimatedAttempts: 6,
   estimatedOutputBytes: 2048,
@@ -44,6 +75,8 @@ export const contentPlan: ContentPlanSnapshot = {
   plan: quizPlan,
   planHash: 'a'.repeat(64),
   completedUnits: 1,
+  completedChapters: 1,
+  totalChapters: 1,
   fullSourceRead: true,
 }
 export const learningTask: TaskSnapshot = {
@@ -78,6 +111,16 @@ export const learningTask: TaskSnapshot = {
 }
 export const quizResult: LearningResult = {
   contentPlan: quizPlan,
+  coverageReport: [
+    {
+      id: 'ch1',
+      kind: 'QUIZ_CHAPTER',
+      available: 1,
+      selected: 1,
+      relatedIds: ['q1'],
+      reason: '主要覆盖',
+    },
+  ],
   workflowId: 'learning-quiz-v1',
   title: '验证自测',
   quiz: {
@@ -123,6 +166,48 @@ export const compilationResult: LearningResult = {
   contentPlan: {
     ...quizPlan,
     taskType: 'KNOWLEDGE_COMPILATION',
+    quiz: null,
+    compilation: {
+      directory: {
+        title: '验证整编',
+        audience: '初学者',
+        requirements: '',
+        reason: '保留验证步骤',
+        chapters: [
+          {
+            id: 'ch1',
+            parentId: '',
+            title: '验证步骤',
+            purpose: '检验理解',
+            exclusions: [],
+            resultDependencies: [],
+            relatedChapterIds: [],
+            terms: [],
+          },
+        ],
+        terms: [],
+      },
+      knowledge: [
+        {
+          id: 'k1',
+          relation: 'SINGLE',
+          summary: '验证依据',
+          sourceItemIds: ['item-1'],
+          conditions: [],
+        },
+      ],
+      sections: [
+        {
+          id: 'g1',
+          chapterId: 'ch1',
+          title: '验证依据',
+          purpose: '检验理解',
+          ownedKnowledgeIds: ['k1'],
+          contextKnowledgeIds: [],
+          outputBytes: 2048,
+        },
+      ],
+    },
     counts: { ...quizPlan.counts, questions: 0, chapters: 1, sections: 1 },
   },
   workflowId: 'learning-compilation-v1',
@@ -134,6 +219,7 @@ export const compilationResult: LearningResult = {
       {
         id: 'ch1',
         title: '验证步骤',
+        parentId: '',
         groups: [{ id: 'g1', heading: '验证依据', relation: '先核对再执行', itemIds: ['item-1'] }],
       },
     ],

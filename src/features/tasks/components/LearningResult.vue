@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import PageStepper from '@/shared/ui/PageStepper.vue'
+import { planIntent } from '@/shared/api/contracts/contentPlan'
 import { ref, computed } from 'vue'
 import type { LearningResult, LearningCitation } from '@/shared/api/contracts/learning'
 import { knowledgeApi } from '@/features/knowledge'
@@ -43,6 +45,39 @@ function locate(value: LearningCitation) {
     }
   })
 }
+const coveragePage = ref(0)
+const coverageLabels: Record<string, string> = {
+  READ: '原文读取',
+  KNOWLEDGE: '知识归属',
+  ACCEPTANCE: '内容验收',
+  QUIZ_CHAPTER: '主要章节题数',
+  QUIZ_OBJECTIVE: '考查目标',
+  QUIZ_ASSOCIATED: '关联章节',
+  QUIZ_SUBTREE_OBJECTIVE: '子树目标',
+  CHAPTER_ACCEPTANCE: '章节验收',
+}
+const coverageRows = computed(() =>
+  props.result.coverageReport
+    .slice(coveragePage.value * 20, (coveragePage.value + 1) * 20)
+    .map((row) => ({
+      ...row,
+      kindLabel:
+        coverageLabels[row.kind] ??
+        (row.kind.startsWith('UNEXAMINED_') ? '未考查（' + row.kind + '）' : row.kind),
+    })),
+)
+function chapterPath(id: string) {
+  const chapters = props.result.outline?.chapters ?? [],
+    path: string[] = [],
+    seen = new Set<string>()
+  let chapter = chapters.find((c) => c.id === id)
+  while (chapter && !seen.has(chapter.id)) {
+    seen.add(chapter.id)
+    path.unshift(chapter.title)
+    chapter = chapters.find((c) => c.id === chapter?.parentId)
+  }
+  return path.join(' / ')
+}
 </script>
 <template>
   <section class="panel learning-result">
@@ -52,7 +87,19 @@ function locate(value: LearningCitation) {
       计划数量：{{ result.contentPlan.counts.questions }} 题 ·
       {{ result.contentPlan.counts.chapters }} 章 · {{ result.contentPlan.counts.sections }} 节
     </p>
-    <p>{{ result.contentPlan.intent.reason }}</p>
+    <p>{{ planIntent(result.contentPlan)?.reason }}</p>
+    <details>
+      <summary>章节与知识覆盖（{{ result.coverageReport.length }} 项）</summary>
+      <p class="muted">完整阅读不代表所有知识都已考查。关联章节不增加主要章节题数。</p>
+      <el-table :data="coverageRows"
+        ><el-table-column prop="kindLabel" label="覆盖类型" /><el-table-column
+          prop="id"
+          label="对象" /><el-table-column prop="selected" label="已采用" /><el-table-column
+          prop="available"
+          label="可用" /><el-table-column prop="reason" label="说明"
+      /></el-table>
+      <PageStepper :page="coveragePage" @change="coveragePage = $event" />
+    </details>
     <el-alert
       :title="
         result.qualityStatus === 'MODEL_REVIEW_PASSED_PENDING_HUMAN'
@@ -102,7 +149,7 @@ function locate(value: LearningCitation) {
         <h3>{{ result.outline.title }} · 目录</h3>
         <ol>
           <li v-for="chapter in result.outline.chapters" :key="chapter.id">
-            <strong>{{ chapter.title }}</strong>
+            <strong>{{ chapterPath(chapter.id) }}</strong>
             <p v-for="group in chapter.groups" :key="group.id">
               {{ group.heading
               }}<span v-if="group.relation" class="muted"> · {{ group.relation }}</span>
@@ -111,7 +158,7 @@ function locate(value: LearningCitation) {
         </ol>
       </nav>
       <article v-for="chapter in result.chapters" :key="chapter.id" class="learning-chapter">
-        <h3>{{ chapter.title }}</h3>
+        <h3>{{ chapterPath(chapter.id) }}</h3>
         <section
           v-for="section in chapter.sections"
           :key="section.groupId"

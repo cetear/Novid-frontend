@@ -7,7 +7,11 @@ import {
   taskSchema,
   graphSchema,
 } from '../../src/shared/api/contracts/backend'
-import { contentPlanSchema } from '../../src/shared/api/contracts/contentPlan'
+import {
+  contentPlanSchema,
+  logicalUnits,
+  planIntent,
+} from '../../src/shared/api/contracts/contentPlan'
 import { learningResultSchema } from '../../src/shared/api/contracts/learning'
 import { previewSchema } from '../../src/shared/api/contracts/media'
 
@@ -225,11 +229,13 @@ test('真实 V2：自动规划自测、整编与 PPT，内容计划和运行图'
         const plan = contentPlanSchema.parse(await response.json())
         evidence['plan' + id] = plan
         expect(plan.fullSourceRead).toBe(true)
-        expect(plan.completedUnits).toBe(plan.plan.units.length)
+        expect(plan.completedUnits).toBe(logicalUnits(plan.plan))
         await page.getByRole('link', { name: '学习与制作', exact: true }).click()
         await page.getByLabel('已知任务 ID').fill(String(id))
         await page.getByRole('button', { name: '打开', exact: true }).click()
-        await expect(page.locator('.content-plan')).toContainText(plan.plan.intent.title)
+        await expect(page.locator('.content-plan')).toContainText(
+          planIntent(plan.plan)?.title ?? '',
+        )
         if (task.taskType === 'NOTES_PPT') {
           const preview = previewSchema.parse(await (await api('/tasks/' + id + '/preview')).json())
           expect(preview.contentPlan?.planHash).toBe(plan.planHash)
