@@ -4,6 +4,8 @@ import { useRoute } from 'vue-router'
 import { runsApi } from '../api'
 import type { TraceGraph } from '@/shared/api/contracts/backend'
 import RunGraph from '../components/RunGraph.vue'
+import ModelCalls from '../components/ModelCalls.vue'
+import { errorMessage } from '@/shared/api/errors'
 import { useLoad } from '@/shared/lib/useLoad'
 import { dateTime } from '@/shared/lib/format'
 import PageHeader from '@/shared/ui/PageHeader.vue'
@@ -14,6 +16,10 @@ const route = useRoute(),
   { data, loading, loadError, load } = useLoad<TraceGraph>()
 function refresh() {
   void load((signal) => runsApi.graph(String(route.params.traceId), signal))
+}
+function invalidated(e: unknown) {
+  data.value = null
+  loadError.value = errorMessage(e)
 }
 watch(() => route.params.traceId, refresh, { immediate: true })
 </script>
@@ -52,6 +58,14 @@ watch(() => route.params.traceId, refresh, { immediate: true })
       ><span v-if="data.run.sessionId" class="muted small">关联会话 #{{ data.run.sessionId }}</span>
     </div>
   </div>
-  <RunGraph v-if="data" :key="data.run.traceId" :graph="data" />
+  <RunGraph v-if="data" :key="data.run.traceId" :graph="data" @invalidated="invalidated" />
+  <section v-if="data" class="panel">
+    <ModelCalls :key="data.run.traceId" :trace-id="data.run.traceId" @invalidated="invalidated" />
+  </section>
   <FeePanel kind="runs" :resource-id="String(route.params.traceId)" />
 </template>
+<style scoped>
+.mono {
+  overflow-wrap: anywhere;
+}
+</style>

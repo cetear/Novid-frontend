@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import WorkflowDetails from '../components/WorkflowDetails.vue'
 import CompilationSave from '../components/CompilationSave.vue'
+import CompilationRetry from '../components/CompilationRetry.vue'
 import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { tasksApi } from '../api'
@@ -245,7 +246,9 @@ function invalidateLearning(reason: unknown) {
           <strong>{{ step.label }}</strong
           ><StatusBadge :status="step.status" /><span class="muted small"
             >开始 {{ dateTime(step.startedAt) }} · 完成 {{ dateTime(step.completedAt) }}</span
-          ><span v-if="step.errorCode" class="inline-error">{{ step.errorCode }}</span>
+          ><span v-if="step.errorCode" class="inline-error">{{
+            taskErrorMessages[step.errorCode] || step.errorCode
+          }}</span>
         </div>
       </template>
       <p v-else class="muted small">该响应未提供步骤进度，不推算处理阶段或百分比。</p>
@@ -291,6 +294,11 @@ function invalidateLearning(reason: unknown) {
       </p>
     </div>
     <TaskMedia v-if="isMedia" :task="task" @changed="refresh" />
+    <CompilationRetry
+      v-if="task.taskType === 'KNOWLEDGE_COMPILATION' && task.status === 'FAILED'"
+      :task="task"
+      @changed="refresh"
+      @invalidated="invalidateLearning" />
     <LearningResultView v-if="learning" :result="learning" @invalidated="invalidateLearning" />
     <CompilationSave
       v-if="learning && task.taskType === 'KNOWLEDGE_COMPILATION'"

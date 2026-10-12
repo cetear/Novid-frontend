@@ -2,11 +2,19 @@
 import { computed, ref, useId, watch } from 'vue'
 import { ElDrawer } from 'element-plus'
 import NodePayload from './NodePayload.vue'
+import ModelCalls from './ModelCalls.vue'
+import ValidationDiagnostic from './ValidationDiagnostic.vue'
+import { runsApi } from '../api'
+import { useLoad } from '@/shared/lib/useLoad'
+import { ApiError } from '@/shared/api/errors'
+import Feedback from '@/shared/ui/Feedback.vue'
 import type { TraceGraph, TraceSpan } from '@/shared/api/contracts/backend'
 import { nodeRows, nodeHierarchy, duration, knownUsage, timelineGroups } from '../model'
 import { dateTime, formatDuration } from '@/shared/lib/format'
 import StatusBadge from '@/shared/ui/StatusBadge.vue'
 const props = defineProps<{ graph: TraceGraph }>()
+const emit = defineEmits<{ invalidated: [error: unknown] }>()
+const nodeDetail = useLoad<TraceSpan>()
 const selectedId = ref('')
 const timelineId = useId()
 const expandedCategories = ref(new Set<string>())
@@ -32,7 +40,23 @@ watch(
   },
 )
 const groups = computed(() => timelineGroups(props.graph.nodes))
-const selected = computed(() => props.graph.nodes.find((node) => node.spanId === selectedId.value))
+const summary = computed(() => props.graph.nodes.find((node) => node.spanId === selectedId.value))
+const selected = computed(() => nodeDetail.data.value ?? summary.value)
+watch(selectedId, (id) => {
+  nodeDetail.reset()
+  if (!id) return
+  void nodeDetail.load(async (signal) => {
+    try {
+      return await runsApi.node(props.graph.run.traceId, id, signal)
+    } catch (e) {
+      if (!signal.aborted && e instanceof ApiError && [401, 403, 404].includes(e.status)) {
+        selectedId.value = ''
+        emit('invalidated', e)
+      }
+      throw e
+    }
+  })
+})
 const usage = computed(() => knownUsage(props.graph))
 const positions = computed(
   () =>
@@ -246,6 +270,8 @@ function toggleNode(id: string) {
     "
   >
     <section v-if="selected" aria-label="节点详情">
+      <Feedback :error="nodeDetail.loadError.value" />
+      <p v-if="nodeDetail.loading.value">正在核验节点详情…</p>
       <h3>{{ selected.name }}</h3>
       <StatusBadge :status="selected.status" />
       <p class="mono small">
@@ -270,8 +296,27 @@ function toggleNode(id: string) {
       >
         来源当前不可访问，输入和输出内容已隐藏。
       </p>
-      <NodePayload label="节点输入" :payload="selected.input" />
-      <NodePayload label="节点输出" :payload="selected.output" />
+      <template v-if="nodeDetail.data.value">
+        <NodePayload label="节点输入" :payload="selected.input" />
+        <NodePayload label="节点输出" :payload="selected.output" />
+        <p v-if="selected.observation">
+          提供方调用：{{ selected.observation.callStatus }} · 本地校验：{{
+            selected.observation.validationStatus
+          }}
+          · HTTP {{ selected.observation.httpMillis }} ms · 校验
+          {{ selected.observation.validationMillis }} ms · 归档
+          {{ selected.observation.archiveMillis }} ms
+        </p>
+        <ValidationDiagnostic :diagnostic="selected.diagnostic" />
+        <ModelCalls
+          v-if="selected.type === 'AGENT' || selected.observation?.callId"
+          :key="selected.spanId"
+          :trace-id="graph.run.traceId"
+          :node-id="selected.type === 'AGENT' ? selected.name : undefined"
+          :initial-call-id="selected.observation?.callId"
+          @invalidated="emit('invalidated', $event)"
+        />
+      </template>
       <p v-if="selected.routeReason">路由原因：{{ selected.routeReason }}</p>
       <p v-if="selected.toolCallHash" class="mono small">
         工具关联哈希 {{ selected.toolCallHash }}

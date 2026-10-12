@@ -111,7 +111,9 @@ function load(next = page.value) {
           p.children.join('、') || '无'
         }}
       </p>
-      <p v-if="p.errorCode">{{ p.errorCode }}</p>
+      <p v-if="p.errorCode">
+        {{ p.errorCode === 'WORKFLOW_INTERRUPTED' ? '被中断，等待续跑' : p.errorCode }}
+      </p>
       <p v-for="part in p.parts" :key="part.id">
         {{ part.id }} → {{ part.logicalId }} · {{ part.purpose }} · 证据
         {{ part.itemIds.join('、') }}

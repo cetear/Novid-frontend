@@ -1,15 +1,21 @@
 import { defineConfig, devices } from '@playwright/test'
 import { existsSync } from 'node:fs'
 if (existsSync('.env.live.local')) process.loadEnvFile('.env.live.local')
-const live = process.argv.some(
-  (arg, index, args) =>
-    arg === '--project=live' || (arg === '--project' && args[index + 1] === 'live'),
-)
-const outputName = live
-  ? process.argv.some((arg) => arg.includes('live-v3-readback'))
-    ? 'live-v3-readback'
-    : 'live'
-  : 'contract'
+const live =
+  process.env.NOVID_E2E_MODE === 'live' ||
+  process.argv.some(
+    (arg, index, args) =>
+      arg === '--project=live' || (arg === '--project' && args[index + 1] === 'live'),
+  )
+if (live) process.env.NOVID_E2E_MODE = 'live'
+const outputName =
+  process.env.NOVID_E2E_OUTPUT ||
+  (live
+    ? process.argv.some((arg) => arg.includes('live-v3-readback'))
+      ? 'live-v3-readback'
+      : 'live'
+    : 'contract')
+process.env.NOVID_E2E_OUTPUT = outputName
 const port = live ? 5173 : 4173
 const baseURL = 'http://127.0.0.1:' + port
 export default defineConfig({

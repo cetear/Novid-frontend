@@ -196,8 +196,8 @@ export async function mockBackend(
   })
   return state
 }
-export async function login(page: Page) {
-  await page.goto('/login')
+export async function login(page: Page, path = '/login') {
+  await page.goto(path)
   await page.getByLabel('用户名', { exact: true }).fill('learner')
   await page.getByLabel('密码', { exact: true }).fill('test-password-123')
   await page.getByRole('button', { name: '登录工作台' }).click()

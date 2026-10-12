@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 vi.mock('@/shared/ui/StatusBadge.vue', () => ({
   default: { props: ['status'], template: '<span>{{ status }}</span>' },
 }))
-import { mount } from '@vue/test-utils'
+import { mount, flushPromises } from '@vue/test-utils'
+import { runsApi } from '@/features/runs/api'
 import RunGraph from '@/features/runs/components/RunGraph.vue'
 import { nodeHierarchy, timelineGroups } from '@/features/runs/model'
 import { formatDuration } from '@/shared/lib/format'
@@ -173,6 +174,9 @@ describe('run node details', () => {
       originalChars: 26,
     }
     value.nodes[1]!.output = { content: '回答片段', truncated: true, originalChars: 20000 }
+    vi.spyOn(runsApi, 'node').mockImplementation(async (_id, node) =>
+      value.nodes.find((n) => n.spanId === node)!,
+    )
     const wrapper = mount(RunGraph, {
       props: { graph: value },
       global: {
@@ -183,6 +187,7 @@ describe('run node details', () => {
     })
     await wrapper.get('.run-graph-toggle').trigger('click')
     await wrapper.findAll('.run-graph-node')[1]!.trigger('keydown', { key: 'Enter' })
+    await flushPromises()
     const panel = wrapper.get('[aria-label="节点详情"]')
     expect(panel.text()).toContain('耗时')
     expect(panel.text()).toContain('0小时0分钟2秒0毫秒')
@@ -191,6 +196,7 @@ describe('run node details', () => {
     expect(panel.get('[aria-label="节点输出"]').text()).toContain('已截断')
     expect(wrapper.findAll('.run-graph-node')[1]!.attributes('aria-pressed')).toBe('true')
     await wrapper.findAll('.run-graph-node')[0]!.trigger('keydown', { key: ' ' })
+    await flushPromises()
     expect(wrapper.get('[aria-label="节点详情"]').text()).toContain('未记录内容')
     wrapper.unmount()
   })

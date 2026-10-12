@@ -1,0 +1,31 @@
+import type { RetryPlan } from '../src/shared/api/contracts/taskRetry'
+export const retryPlan: RetryPlan = {
+  taskId: 51,
+  stateVersion: 7,
+  canContinue: true,
+  errorCode: 'BUDGET_EXCEEDED',
+  blockers: [],
+  remainingExecutionSeconds: -10,
+  remainingTurns: 50,
+  remainingAttempts: 50,
+  remainingTools: 50,
+  remainingRepairs: 4,
+  completedNodes: 3,
+  pendingNodes: 2,
+  acceptedPackages: 2,
+  pendingPackages: 1,
+  currency: 'CNY',
+  remainingAmount: 10,
+  remainingTokens: 50000,
+}
+export const retryRequest = {
+  mode: 'CONTINUE' as const,
+  expectedStateVersion: 7,
+  additionalExecutionSeconds: 3600,
+  additionalTurns: 0,
+  additionalAttempts: 0,
+  additionalTools: 0,
+  additionalRepairs: 0,
+  additionalTokens: 0,
+  additionalAmount: 0,
+}

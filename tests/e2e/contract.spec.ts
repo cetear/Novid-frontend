@@ -5,6 +5,225 @@ import { ai, document as sampleDocument } from '../fixtures'
 import { fee, mediaPreview, presentation, videoCapability } from '../mediaFixtures'
 import { createHash } from 'node:crypto'
 import { learningTask, quizResult, compilationResult, contentPlan } from '../learningFixtures'
+import { retryPlan } from '../retryFixtures'
+import { modelCall } from '../modelCallFixtures'
+test('调用全文：摘要图、独立尝试、纯文本诊断、游标分页、模型视图与完整下载', async ({ page }) => {
+  const state = await mockBackend(page)
+  await page.route('**/api/v1/runs/trace-1/graph?view=summary', (route) =>
+    route.fulfill({ json: graph }),
+  )
+  await page.route('**/api/v1/runs/trace-1/calls?**', (route) =>
+    route.fulfill({ json: [modelCall] }),
+  )
+  await page.route('**/api/v1/runs/trace-1/calls/call-1', (route) =>
+    route.fulfill({ json: modelCall }),
+  )
+  const pages: URL[] = []
+  await page.route('**/api/v1/runs/trace-1/calls/call-1/payloads/*?**', (route) => {
+    const url = new URL(route.request().url())
+    pages.push(url)
+    const next = url.searchParams.get('cursor')
+    return route.fulfill({
+      json: {
+        payload: modelCall.output,
+        content:
+          url.searchParams.get('view') === 'model'
+            ? '提取后的模型文本'
+            : next
+              ? '第二页正文'
+              : '<script>私有第一页正文</script>',
+        nextCursor: next ? null : 'server+/opaque=',
+        contentKind: url.searchParams.get('view') === 'model' ? 'MODEL_TEXT' : 'RAW',
+      },
+    })
+  })
+  await page.route('**/api/v1/runs/trace-1/calls/call-1/payloads/*/download', (route) =>
+    route.fulfill({ contentType: 'text/plain;charset=UTF-8', body: '完整原始正文' }),
+  )
+  await login(page, '/runs/trace-1')
+  await page.getByRole('button', { name: '查询模型调用', exact: true }).click()
+  await page.getByRole('button', { name: '查看调用 call-1', exact: true }).click()
+  const detail = page.locator('.call-detail')
+  await expect(detail).toContainText('提供方调用：SUCCESS · 本地校验：FAILED')
+  await expect(detail.locator('.diagnostic pre')).toHaveText('<img src=x onerror=alert(1)>123')
+  await expect(detail.locator('img')).toHaveCount(0)
+  await expect(detail).toContainText('前置校验中止')
+  await page.getByRole('button', { name: '读取正文首页' }).click()
+  await expect(detail.locator('.payload-text')).toHaveText('<script>私有第一页正文</script>')
+  await page.getByRole('button', { name: '正文下一页' }).click()
+  await expect(detail.locator('.payload-text')).toHaveText('第二页正文')
+  expect(pages[1]!.searchParams.get('cursor')).toBe('server+/opaque=')
+  await expect(page.getByRole('button', { name: '正文下一页' })).toBeDisabled()
+  await page.getByLabel('正文方向').selectOption('OUTPUT')
+  await page.getByLabel('响应展示').selectOption('model')
+  await expect(detail.locator('.payload-text')).toHaveText('提取后的模型文本')
+  const download = page.waitForEvent('download')
+  await page.getByRole('button', { name: '下载提供方响应原始正文' }).click()
+  expect((await download).suggestedFilename()).toBe('model-call-call-1-OUTPUT.txt')
+  await page.route('**/api/v1/runs/trace-1/calls/call-1/payloads/*?**', (route) =>
+    route.fulfill({
+      status: 500,
+      json: {
+        code: 'MODEL_CALL_PAYLOAD_CORRUPT',
+        message: '调用正文完整性校验失败',
+        retryable: false,
+      },
+    }),
+  )
+  await page.getByRole('button', { name: '读取正文首页' }).click()
+  await expect(detail).toContainText('MODEL_CALL_PAYLOAD_CORRUPT')
+  await expect(detail.locator('.payload-text')).toHaveCount(0)
+  await page.getByRole('button', { name: '重新核验调用' }).click()
+  await expect(detail).toContainText('响应预览')
+  await page.route('**/api/v1/runs/trace-1/calls/call-1/payloads/*/download', (route) =>
+    route.fulfill({
+      status: 409,
+      json: { code: 'MODEL_CALL_PAYLOAD_UNAVAILABLE', message: '调用全文不可用', retryable: false },
+    }),
+  )
+  await page.getByRole('button', { name: '下载提供方响应原始正文' }).click()
+  await expect(detail).toContainText('MODEL_CALL_PAYLOAD_UNAVAILABLE')
+  await expect(detail).not.toContainText('响应预览')
+  await expect(detail.locator('.diagnostic')).toHaveCount(0)
+  expect(state.requests.filter((r) => r.startsWith('POST ') && !r.includes('/auth/'))).toEqual([])
+  await page.setViewportSize({ width: 375, height: 812 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  expect(state.requests.filter((r) => r.endsWith('/graph'))).toEqual([])
+})
+test('调用全文：切换调用丢弃迟到正文，撤销后清理全部私有内容', async ({ page }) => {
+  await mockBackend(page)
+  await page.route('**/api/v1/runs/trace-1/graph?view=summary', (route) =>
+    route.fulfill({ json: graph }),
+  )
+  const second = { ...modelCall, call: { ...modelCall.call, callId: 'call-2' } }
+  await page.route('**/api/v1/runs/trace-1/calls?**', (route) =>
+    route.fulfill({ json: [modelCall, second] }),
+  )
+  await page.route('**/api/v1/runs/trace-1/calls/call-*', (route) =>
+    route.fulfill({ json: route.request().url().endsWith('call-2') ? second : modelCall }),
+  )
+  let release!: () => void, started!: () => void
+  const gate = new Promise<void>((r) => {
+      release = r
+    }),
+    began = new Promise<void>((r) => {
+      started = r
+    })
+  await page.route('**/api/v1/runs/trace-1/calls/call-1/payloads/*?**', async (route) => {
+    started()
+    await gate
+    await route
+      .fulfill({
+        json: {
+          payload: modelCall.input,
+          content: '迟到私有正文',
+          nextCursor: null,
+          contentKind: 'RAW',
+        },
+      })
+      .catch(() => {})
+  })
+  await page.route('**/api/v1/runs/trace-1/calls/call-2/payloads/*?**', (route) =>
+    route.fulfill({
+      status: 403,
+      json: { code: 'ACCESS_DENIED', message: '来源权限已撤销', retryable: false },
+    }),
+  )
+  await login(page, '/runs/trace-1')
+  await page.getByRole('button', { name: '查询模型调用', exact: true }).click()
+  await page.getByRole('button', { name: '查看调用 call-1', exact: true }).click()
+  await page.getByRole('button', { name: '读取正文首页' }).click()
+  await began
+  await page.getByRole('button', { name: '查看调用 call-2', exact: true }).click()
+  release()
+  await expect(page.locator('.call-detail')).toContainText('调用 call-2')
+  await expect(page.getByText('迟到私有正文')).toHaveCount(0)
+  await page.getByRole('button', { name: '读取正文首页' }).click()
+  await expect(page.locator('.model-calls')).toHaveCount(0)
+  await expect(page.locator('.diagnostic')).toHaveCount(0)
+  await expect(page.getByText('请求预览', { exact: true })).toHaveCount(0)
+  await expect(page.getByText('来源权限已撤销', { exact: false })).toBeVisible()
+})
+test('整编续跑：负数额度、原请求重试、冲突刷新和原任务观察', async ({ page }) => {
+  const state = await mockBackend(page)
+  state.task = {
+    ...structuredClone(learningTask),
+    taskType: 'KNOWLEDGE_COMPILATION',
+    status: 'FAILED',
+    stateVersion: 7,
+    errorCode: 'BUDGET_EXCEEDED',
+  }
+  await page.route('**/api/v1/tasks/51/retry-plan', (route) =>
+    route.fulfill({ json: { ...retryPlan, stateVersion: state.task.stateVersion } }),
+  )
+  const submissions: Array<{ key: string; body: unknown }> = []
+  await page.route('**/api/v1/tasks/51/retry', (route) => {
+    submissions.push({
+      key: route.request().headers()['idempotency-key']!,
+      body: route.request().postDataJSON(),
+    })
+    if (submissions.length === 1) return route.abort('connectionreset')
+    if (submissions.length === 2) {
+      state.task.stateVersion = 8
+      return route.fulfill({
+        status: 409,
+        json: { code: 'OPERATION_CONFLICT', message: '任务状态已变化', retryable: false },
+      })
+    }
+    state.task = { ...state.task, status: 'QUEUED', stateVersion: 9, errorCode: null }
+    return route.fulfill({ status: 202, json: state.task })
+  })
+  await login(page, '/tasks/51')
+  await page.getByRole('button', { name: '查询续跑资格' }).click()
+  await expect(page.locator('.compilation-retry')).toContainText('剩余 -10')
+  await page.getByLabel('追加执行时间（秒）', { exact: true }).fill('3600')
+  await page.getByRole('button', { name: '继续原整编任务', exact: true }).click()
+  await expect(page.getByRole('button', { name: '使用原请求重新确认续跑' })).toBeVisible()
+  await expect(page.getByLabel('追加执行时间（秒）', { exact: true })).toBeDisabled()
+  await page.getByRole('button', { name: '使用原请求重新确认续跑' }).click()
+  await expect(page.getByText('任务状态已变化', { exact: false })).toBeVisible()
+  expect(submissions[1]).toEqual(submissions[0])
+  await page.getByRole('button', { name: '查询续跑资格' }).click()
+  await page.setViewportSize({ width: 375, height: 812 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.getByRole('button', { name: '继续原整编任务', exact: true }).click()
+  await expect(page.locator('.compilation-retry')).toHaveCount(0)
+  expect(submissions[2]!.key).not.toBe(submissions[0]!.key)
+  expect(submissions[2]!.body).toMatchObject({
+    mode: 'CONTINUE',
+    expectedStateVersion: 8,
+    additionalExecutionSeconds: 3600,
+  })
+  expect(state.requests).not.toContain('POST /tasks')
+})
+test('整编续跑：无资格仅显示原因，权限撤销清除任务', async ({ page }) => {
+  const state = await mockBackend(page)
+  state.task = {
+    ...structuredClone(learningTask),
+    taskType: 'KNOWLEDGE_COMPILATION',
+    status: 'FAILED',
+  }
+  let denied = false
+  await page.route('**/api/v1/tasks/51/retry-plan', (route) =>
+    route.fulfill({
+      status: denied ? 403 : 200,
+      json: denied
+        ? { code: 'ACCESS_DENIED', message: '任务访问已撤销', retryable: false }
+        : {
+            ...retryPlan,
+            canContinue: false,
+            blockers: ['需要质量重做或修复来源及执行基线，普通续跑无法解决'],
+          },
+    }),
+  )
+  await login(page, '/tasks/51')
+  await page.getByRole('button', { name: '查询续跑资格' }).click()
+  await expect(page.getByRole('button', { name: '继续原整编任务', exact: true })).toBeDisabled()
+  await expect(page.locator('.compilation-retry')).toContainText('普通续跑无法解决')
+  denied = true
+  await page.getByRole('button', { name: '查询续跑资格' }).click()
+  await expect(page.locator('.compilation-retry')).toHaveCount(0)
+})
 test('资料内容计划：自动默认、204、动态数量与权限撤销清除', async ({ page }) => {
   const state = await mockBackend(page)
   state.task = { ...structuredClone(learningTask), status: 'PAUSED' }
@@ -1059,6 +1278,13 @@ test('新版运行：实际节点、依赖、未知费用与上一执行', async
     { ...graph.nodes[2]!, spanId: 'read-b', type: 'AGENT', name: 'read_slice2', sequence: 5 },
   )
   payloadGraph.run.nodeCount = payloadGraph.nodes.length
+  await page.route('**/api/v1/runs/trace-1/nodes/*', (route) => {
+    const node = payloadGraph.nodes.find(
+      (n) =>
+        n.spanId === decodeURIComponent(new URL(route.request().url()).pathname.split('/').at(-1)!),
+    )
+    return route.fulfill({ json: node })
+  })
   payloadGraph.edges.push(
     { from: 'root', to: 'read-a', kind: 'CALL' },
     { from: 'root', to: 'read-b', kind: 'CALL' },
@@ -1076,7 +1302,7 @@ test('新版运行：实际节点、依赖、未知费用与上一执行', async
       body: JSON.stringify([graph.run]),
     }),
   )
-  await page.route('**/api/v1/runs/trace-1/graph', (route) =>
+  await page.route('**/api/v1/runs/trace-1/graph?view=summary', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',

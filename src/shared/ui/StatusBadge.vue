@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 const props = defineProps<{ status: string }>()
 const labels: Record<string, string> = {
+  INTERRUPTED: '被中断，等待续跑',
   RECEIVED: '待处理',
   PROCESSING: '处理中',
   REUSED: '复用成功结果',

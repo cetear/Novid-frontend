@@ -22,7 +22,9 @@ export default defineConfig(({ mode }) => {
     plugins: [
       vue(),
       Components({
-        resolvers: [ElementPlusResolver({ importStyle: 'css', directives: true })],
+        resolvers: [
+          ElementPlusResolver({ importStyle: mode === 'test' ? false : 'css', directives: true }),
+        ],
         dts: 'src/components.d.ts',
       }),
     ],

@@ -37,9 +37,9 @@ watch(() => [props.kind, props.resourceId], refresh, { immediate: true })
           ><small>未知成本可能未计入</small>
         </div>
         <div class="stat-card">
-          <span>原范围上限 · {{ data.currency ?? '币种未知' }}</span
+          <span>当前范围上限 · {{ data.currency ?? '币种未知' }}</span
           ><strong>{{ data.limitAmount ?? '未登记' }}</strong
-          ><small>恢复和返工不会重置上限</small>
+          ><small>保留累计用量；续跑追加以服务端记录为准</small>
         </div>
       </div>
       <el-alert

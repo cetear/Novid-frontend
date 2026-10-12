@@ -6,6 +6,13 @@ export function useLoad<T>() {
     loadError = ref('')
   let generation = 0,
     controller: AbortController | undefined
+  function reset() {
+    generation++
+    controller?.abort()
+    data.value = null
+    loading.value = false
+    loadError.value = ''
+  }
   async function load(query: (signal: AbortSignal) => Promise<T>) {
     const current = ++generation
     controller?.abort()
@@ -27,5 +34,5 @@ export function useLoad<T>() {
     generation++
     controller?.abort()
   })
-  return { data, loading, loadError, load }
+  return { data, loading, loadError, load, reset }
 }

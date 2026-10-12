@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { diagnosticSchema, observationSchema } from './modelCalls'
 
 export const id = z.number().int().positive().refine(Number.isSafeInteger, 'ID 超出安全整数范围')
 const count = z.number().int().nonnegative().refine(Number.isSafeInteger)
@@ -328,6 +329,8 @@ export const tracePayloadSchema = z.object({
   originalChars: count,
 })
 export const spanSchema = z.object({
+  observation: observationSchema.nullish(),
+  diagnostic: diagnosticSchema.nullish(),
   spanId: z.string(),
   parentSpanId: z.string().nullable(),
   type: z.string(),

@@ -1,4 +1,9 @@
 import { z } from 'zod'
+import {
+  retryPlanSchema,
+  retryRequestSchema,
+  type RetryRequest,
+} from '@/shared/api/contracts/taskRetry'
 import { readPlanSchema, compilationSaveSchema } from '@/shared/api/contracts/workflow'
 import { packageStatusSchema } from '@/shared/api/contracts/contentPlan'
 import { http } from '@/shared/api/transport'
@@ -14,6 +19,17 @@ import {
   type CompilationOptions,
 } from '@/shared/api/contracts/learning'
 export const tasksApi = {
+  retryPlan(id: number, signal?: AbortSignal) {
+    return http().json(`/tasks/${positiveId(id)}/retry-plan`, retryPlanSchema, { signal })
+  },
+  retry(id: number, request: RetryRequest, key: string, signal?: AbortSignal) {
+    return http().json(`/tasks/${positiveId(id)}/retry`, taskSchema, {
+      method: 'POST',
+      key,
+      json: retryRequestSchema.parse(request),
+      signal,
+    })
+  },
   create(
     taskType: TaskType,
     instructions: string,
