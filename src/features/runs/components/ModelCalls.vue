@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { runsApi } from '../api'
 import type { z } from 'zod'
 import type { callDetailSchema } from '@/shared/api/contracts/modelCalls'
@@ -13,8 +13,9 @@ const emit = defineEmits<{ invalidated: [error: unknown] }>()
 const list = useLoad<z.infer<typeof callDetailSchema>[]>()
 const page = ref(0),
   selected = ref(props.initialCallId || '')
+const singleCall = computed(() => !props.nodeId && Boolean(props.initialCallId))
 watch(
-  () => [props.traceId, props.nodeId],
+  () => [props.traceId, props.nodeId, props.initialCallId],
   () => {
     selected.value = props.initialCallId || ''
     page.value = 0
@@ -30,7 +31,10 @@ function load(next = page.value) {
   selected.value = ''
   void list.load(async (signal) => {
     try {
-      const result = await runsApi.calls(props.traceId, next, props.nodeId, signal)
+      // A MODEL span identifies one attempt, even when retries share a business node.
+      const result = singleCall.value
+        ? [await runsApi.call(props.traceId, props.initialCallId!, signal)]
+        : await runsApi.calls(props.traceId, next, props.nodeId, signal)
       if (!signal.aborted) {
         page.value = next
         selected.value = props.initialCallId || ''
@@ -46,8 +50,11 @@ function load(next = page.value) {
 </script>
 <template>
   <section class="model-calls">
-    <h3>{{ nodeId ? '业务节点各次模型尝试' : '独立模型调用记录' }}</h3>
-    <p>首次、备用、纠正分别记录；复用检查点不会产生新调用。旧记录可能未采集全文。</p>
+    <h3>
+      {{ singleCall ? '当前节点模型调用' : nodeId ? '业务节点各次模型尝试' : '独立模型调用记录' }}
+    </h3>
+    <p v-if="singleCall">仅查看当前节点这一次调用的输入与输出。旧记录可能未采集全文。</p>
+    <p v-else>首次、备用、纠正分别记录；复用检查点不会产生新调用。旧记录可能未采集全文。</p>
     <el-button :loading="list.loading.value" @click="load()">查询模型调用</el-button>
     <Feedback :error="list.loadError.value" />
     <p v-if="list.data.value?.length === 0">本页没有已记录调用；图丢失不代表没有独立调用记录。</p>
@@ -59,7 +66,7 @@ function load(next = page.value) {
       <el-button @click="selected = call.callId">查看调用 {{ call.callId }}</el-button>
     </article>
     <PageStepper
-      v-if="list.data.value"
+      v-if="list.data.value && !singleCall"
       :page="page"
       :busy="list.loading.value"
       :count="list.data.value.length"
