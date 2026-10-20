@@ -55,7 +55,10 @@ function load(next = page.value) {
     ><Feedback :error="error" />
     <p v-if="checked && !read">阅读计划尚未冻结（204）。</p>
     <template v-if="read"
-      ><p>
+      ><p class="muted small">
+        冻结阅读协议：{{ read.plan.protocol }}；阅读观察与部分结果不代表完整覆盖。
+      </p>
+      <p>
         读取片段 {{ read.completedFragments }} / {{ read.plan.fragments.length }} · 阅读包
         {{ read.completedPacks }} / {{ read.plan.packs.length }} ·
         {{ read.fullSourceRead ? '完整读取已确认' : '读取尚未完成' }}

@@ -366,6 +366,7 @@ export const spanSchema = z.object({
     .optional(),
 })
 export const graphSchema = z.object({
+  nodeRuns: z.record(z.string(), z.string()).optional(),
   run: traceSchema,
   nodes: z.array(spanSchema),
   edges: z.array(

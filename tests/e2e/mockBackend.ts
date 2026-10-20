@@ -2,6 +2,7 @@ import { expect, type Page } from '@playwright/test'
 import { user, base, document, ai, approval, task } from '../fixtures'
 import { ingestion } from '../stageFixtures'
 import { fee } from '../mediaFixtures'
+import { retryPlan } from '../retryFixtures'
 export async function mockBackend(
   page: Page,
   options: {
@@ -65,6 +66,13 @@ export async function mockBackend(
         progress: null,
       })
     if (path === '/tasks/51/content-plan') return route.fulfill({ status: 204 })
+    if (path === '/tasks/51/retry-plan')
+      return send({
+        ...retryPlan,
+        stateVersion: state.task.stateVersion,
+        canContinue: false,
+        blockers: ['需要核验原失败原因'],
+      })
     if (path === '/tasks/51/fees') return send(fee)
     if (path === '/auth/logout') return empty()
     if (path === '/auth/password') {

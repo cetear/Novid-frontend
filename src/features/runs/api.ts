@@ -11,8 +11,12 @@ export const runsApi = {
   get(id: string, signal?: AbortSignal) {
     return http().json(`/runs/${encodeURIComponent(id)}`, traceSchema, { signal })
   },
-  graph(id: string, signal?: AbortSignal) {
-    return http().json(`${runPath(id)}/graph?view=summary`, graphSchema, { signal })
+  graph(id: string, signal?: AbortSignal, scope: 'continuation' | 'execution' = 'continuation') {
+    return http().json(
+      `${runPath(id)}/graph?view=summary${scope === 'execution' ? '&scope=execution' : ''}`,
+      graphSchema,
+      { signal },
+    )
   },
   node(id: string, node: string, signal?: AbortSignal) {
     return http().json(`${runPath(id)}/nodes/${encodeURIComponent(node)}`, spanSchema, { signal })

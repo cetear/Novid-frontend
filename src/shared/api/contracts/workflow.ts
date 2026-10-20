@@ -5,7 +5,11 @@ const count = z.number().int().nonnegative().refine(Number.isSafeInteger)
 const strings = z.array(z.string())
 export const readPlanSchema = z.object({
   plan: z.object({
-    protocol: z.literal('structure-read-v1'),
+    protocol: z.enum([
+      'structure-read-v1',
+      'structure-read-v2-compact',
+      'structure-read-v3-progress',
+    ]),
     documents: z.array(
       z.object({
         knowledgeBaseId: id,

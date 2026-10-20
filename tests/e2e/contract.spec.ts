@@ -7,6 +7,204 @@ import { createHash } from 'node:crypto'
 import { learningTask, quizResult, compilationResult, contentPlan } from '../learningFixtures'
 import { retryPlan } from '../retryFixtures'
 import { modelCall } from '../modelCallFixtures'
+test('自测续跑：自动资格、额度不足、同键重试及原任务轮询', async ({ page }) => {
+  const state = await mockBackend(page)
+  state.task = {
+    ...structuredClone(learningTask),
+    taskType: 'QUIZ_GENERATION',
+    status: 'FAILED',
+    stateVersion: 7,
+    errorCode: 'BUDGET_EXCEEDED',
+  }
+  let reads = 0
+  await page.route('**/api/v1/tasks/51/retry-plan', (route) => {
+    reads++
+    return route.fulfill({ json: retryPlan })
+  })
+  const submissions: Array<{ key: string; body: Record<string, unknown> }> = []
+  await page.route('**/api/v1/tasks/51/retry', (route) => {
+    submissions.push({
+      key: route.request().headers()['idempotency-key']!,
+      body: route.request().postDataJSON(),
+    })
+    if (submissions.length === 1)
+      return route.fulfill({
+        status: 400,
+        json: { code: 'RETRY_BUDGET_INSUFFICIENT', message: '请追加执行时间', retryable: false },
+      })
+    if (submissions.length === 2) return route.abort('connectionreset')
+    state.task = { ...state.task, status: 'QUEUED', stateVersion: 8, errorCode: null }
+    return route.fulfill({ status: 202, json: state.task })
+  })
+  await login(page, '/tasks/51')
+  await expect(page.locator('.learning-retry')).toContainText('自测断点续跑')
+  await expect.poll(() => reads).toBe(1)
+  await page.getByRole('button', { name: '从断点继续处理' }).click()
+  await expect(page.locator('.learning-retry')).toContainText('RETRY_BUDGET_INSUFFICIENT')
+  await page.getByLabel('追加执行时间（秒）').fill('3600')
+  await page.getByRole('button', { name: '从断点继续处理' }).click()
+  await expect(page.getByRole('button', { name: '使用原请求重新确认续跑' })).toBeVisible()
+  await page.getByRole('button', { name: '使用原请求重新确认续跑' }).click()
+  await expect(page.locator('.learning-retry')).toHaveCount(0)
+  expect(submissions[1]!.key).not.toBe(submissions[0]!.key)
+  expect(submissions[2]).toEqual(submissions[1])
+  expect(submissions[2]!.body).toMatchObject({
+    mode: 'CONTINUE',
+    expectedStateVersion: 7,
+    additionalExecutionSeconds: 3600,
+  })
+  expect(submissions[2]!.body).not.toHaveProperty('taskType')
+  expect(state.requests).not.toContain('POST /tasks')
+  expect(state.requests.filter((r) => r === 'GET /tasks/51').length).toBeGreaterThan(1)
+})
+for (const status of ['RUNNING', 'WAITING_APPROVAL', 'PAUSED', 'SUCCEEDED', 'CANCELLED']) {
+  test(`非失败自测不显示续跑表单：${status}`, async ({ page }) => {
+    const state = await mockBackend(page)
+    state.task = { ...structuredClone(learningTask), taskType: 'QUIZ_GENERATION', status }
+    await login(page, '/tasks/51')
+    await expect(page.getByRole('heading', { name: '学习自测', exact: true })).toBeVisible()
+    await expect(page.locator('.learning-retry')).toHaveCount(0)
+    expect(state.requests).not.toContain('GET /tasks/51/retry-plan')
+    if (status === 'PAUSED')
+      await expect(page.getByRole('button', { name: '恢复', exact: true })).toBeVisible()
+  })
+}
+test('模型文本索引缺失后手动查看原始响应，不重新调用模型', async ({ page }) => {
+  const state = await mockBackend(page)
+  await page.route('**/api/v1/runs/trace-1/graph?view=summary', (route) =>
+    route.fulfill({ json: graph }),
+  )
+  await page.route('**/api/v1/runs/trace-1/calls?**', (route) =>
+    route.fulfill({ json: [modelCall] }),
+  )
+  await page.route('**/api/v1/runs/trace-1/calls/call-1', (route) =>
+    route.fulfill({ json: modelCall }),
+  )
+  await page.route('**/api/v1/runs/trace-1/calls/call-1/payloads/*?**', (route) => {
+    if (new URL(route.request().url()).searchParams.get('view') === 'model')
+      return route.fulfill({
+        status: 409,
+        json: {
+          code: 'MODEL_CALL_PAYLOAD_UNAVAILABLE',
+          message: '模型文本索引不可用',
+          retryable: false,
+        },
+      })
+    return route.fulfill({
+      json: {
+        payload: modelCall.output,
+        content: '原始响应仍可用',
+        nextCursor: null,
+        contentKind: 'RAW',
+      },
+    })
+  })
+  await login(page, '/runs/trace-1')
+  await page.getByRole('button', { name: '查询模型调用', exact: true }).click()
+  await page.getByRole('button', { name: '查看调用 call-1' }).click()
+  await page.getByLabel('正文方向').selectOption('OUTPUT')
+  await expect(page.locator('.payload-text')).toHaveText('原始响应仍可用')
+  await page.getByLabel('响应展示').selectOption('model')
+  await expect(page.locator('.payload-text')).toHaveCount(0)
+  await page.getByRole('button', { name: '改看原始响应' }).click()
+  await expect(page.locator('.payload-text')).toHaveText('原始响应仍可用')
+  expect(state.requests.filter((r) => r.startsWith('POST ') && !r.includes('/auth/'))).toEqual([])
+})
+test('归档过期后重新核验清理正文、诊断与预览', async ({ page }) => {
+  await mockBackend(page)
+  let expired = false
+  await page.route('**/api/v1/runs/trace-1/graph?view=summary', (route) =>
+    route.fulfill({ json: graph }),
+  )
+  await page.route('**/api/v1/runs/trace-1/calls?**', (route) =>
+    route.fulfill({ json: [modelCall] }),
+  )
+  await page.route('**/api/v1/runs/trace-1/calls/call-1', (route) =>
+    route.fulfill({
+      json: expired
+        ? {
+            ...modelCall,
+            call: { ...modelCall.call, diagnostic: null },
+            input: { ...modelCall.input, state: 'EXPIRED', preview: '过期预览不得显示' },
+            output: { ...modelCall.output, state: 'EXPIRED', preview: '过期预览不得显示' },
+          }
+        : modelCall,
+    }),
+  )
+  await page.route('**/api/v1/runs/trace-1/calls/call-1/payloads/*?**', (route) =>
+    route.fulfill({
+      json: {
+        payload: modelCall.input,
+        content: '过期前的私有正文',
+        nextCursor: null,
+        contentKind: 'RAW',
+      },
+    }),
+  )
+  await login(page, '/runs/trace-1')
+  await page.getByRole('button', { name: '查询模型调用', exact: true }).click()
+  await page.getByRole('button', { name: '查看调用 call-1' }).click()
+  await page.getByRole('button', { name: '读取正文首页' }).click()
+  await expect(page.locator('.payload-text')).toHaveText('过期前的私有正文')
+  expired = true
+  await page.getByRole('button', { name: '重新核验调用' }).click()
+  await expect(page.locator('.call-detail')).toContainText('归档已过期')
+  await expect(page.locator('.payload-text')).toHaveCount(0)
+  await expect(page.locator('.diagnostic')).toHaveCount(0)
+  await expect(page.getByText('过期预览不得显示', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '读取正文首页' })).toBeDisabled()
+})
+test('延续图使用节点原始运行查询详情与调用，支持仅本次执行', async ({ page }) => {
+  await mockBackend(page)
+  const historicalNode = { ...graph.nodes[1]!, status: 'FAILED' }
+  await page.route('**/api/v1/runs/trace-1/graph?**', (route) =>
+    route.fulfill({
+      json:
+        new URL(route.request().url()).searchParams.get('scope') === 'execution'
+          ? { ...graph, nodes: [], edges: [], nodeRuns: {} }
+          : {
+              ...graph,
+              nodeRuns: { [historicalNode.spanId]: 'trace-old' },
+              nodes: graph.nodes.map((n) =>
+                n.spanId === historicalNode.spanId ? historicalNode : n,
+              ),
+            },
+    }),
+  )
+  let nodeReads = 0,
+    callReads = 0
+  await page.route('**/api/v1/runs/trace-old/nodes/*', (route) => {
+    nodeReads++
+    return route.fulfill({ json: historicalNode })
+  })
+  // Give this historical MODEL an observation so its call records remain discoverable.
+  historicalNode.observation = {
+    callId: 'old-call',
+    callStatus: 'SUCCESS',
+    validationStatus: 'FAILED',
+    schemaId: 'quiz',
+    httpMillis: 5,
+    validationMillis: 1,
+    archiveMillis: 2,
+    input: null,
+    output: null,
+  }
+  await page.route('**/api/v1/runs/trace-old/calls/old-call', (route) => {
+    callReads++
+    return route.fulfill({ json: modelCall })
+  })
+  await login(page, '/runs/trace-1')
+  await page.locator('.run-graph-toggle').first().click()
+  await page.getByRole('button', { name: '查看节点 模型调用', exact: true }).click()
+  await expect(page.getByRole('dialog')).toContainText('trace-old（历史执行）')
+  await page.getByRole('dialog').getByRole('button', { name: '查询模型调用', exact: true }).click()
+  await expect.poll(() => nodeReads).toBe(1)
+  await expect.poll(() => callReads).toBeGreaterThan(0)
+  await page.keyboard.press('Escape')
+  await page.getByLabel('节点范围').selectOption('execution')
+  await expect(page.locator('.run-graph-node')).toHaveCount(0)
+  await expect(page.getByText('空图不代表未执行', { exact: false })).toBeVisible()
+})
 test('调用全文：摘要图、独立尝试、纯文本诊断、游标分页、模型视图与完整下载', async ({ page }) => {
   const state = await mockBackend(page)
   await page.route('**/api/v1/runs/trace-1/graph?view=summary', (route) =>
@@ -175,9 +373,9 @@ test('整编续跑：负数额度、原请求重试、冲突刷新和原任务�
   })
   await login(page, '/tasks/51')
   await page.getByRole('button', { name: '查询续跑资格' }).click()
-  await expect(page.locator('.compilation-retry')).toContainText('剩余 -10')
+  await expect(page.locator('.learning-retry')).toContainText('剩余 -10')
   await page.getByLabel('追加执行时间（秒）', { exact: true }).fill('3600')
-  await page.getByRole('button', { name: '继续原整编任务', exact: true }).click()
+  await page.getByRole('button', { name: '从断点继续处理', exact: true }).click()
   await expect(page.getByRole('button', { name: '使用原请求重新确认续跑' })).toBeVisible()
   await expect(page.getByLabel('追加执行时间（秒）', { exact: true })).toBeDisabled()
   await page.getByRole('button', { name: '使用原请求重新确认续跑' }).click()
@@ -186,8 +384,8 @@ test('整编续跑：负数额度、原请求重试、冲突刷新和原任务�
   await page.getByRole('button', { name: '查询续跑资格' }).click()
   await page.setViewportSize({ width: 375, height: 812 })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
-  await page.getByRole('button', { name: '继续原整编任务', exact: true }).click()
-  await expect(page.locator('.compilation-retry')).toHaveCount(0)
+  await page.getByRole('button', { name: '从断点继续处理', exact: true }).click()
+  await expect(page.locator('.learning-retry')).toHaveCount(0)
   expect(submissions[2]!.key).not.toBe(submissions[0]!.key)
   expect(submissions[2]!.body).toMatchObject({
     mode: 'CONTINUE',
@@ -218,11 +416,11 @@ test('整编续跑：无资格仅显示原因，权限撤销清除任务', async
   )
   await login(page, '/tasks/51')
   await page.getByRole('button', { name: '查询续跑资格' }).click()
-  await expect(page.getByRole('button', { name: '继续原整编任务', exact: true })).toBeDisabled()
-  await expect(page.locator('.compilation-retry')).toContainText('普通续跑无法解决')
+  await expect(page.getByRole('button', { name: '从断点继续处理', exact: true })).toHaveCount(0)
+  await expect(page.locator('.learning-retry')).toContainText('普通续跑无法解决')
   denied = true
   await page.getByRole('button', { name: '查询续跑资格' }).click()
-  await expect(page.locator('.compilation-retry')).toHaveCount(0)
+  await expect(page.locator('.learning-retry')).toHaveCount(0)
 })
 test('资料内容计划：自动默认、204、动态数量与权限撤销清除', async ({ page }) => {
   const state = await mockBackend(page)

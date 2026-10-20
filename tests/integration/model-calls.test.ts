@@ -19,6 +19,7 @@ describe('private model call archive', () => {
           contentKind: 'MODEL_TEXT',
         }),
       )
+      .mockResolvedValueOnce(jsonResponse({ ...graph, nodeRuns: { model: 'trace-old' } }))
     configureTransport(
       createTransport({
         base: '/api/v1',
@@ -37,6 +38,12 @@ describe('private model call archive', () => {
     await runsApi.payload('trace-1', 'call-1', 'OUTPUT', 'model', 'opaque+/=')
     expect(fetcher.mock.calls[2]![0]).toContain('cursor=opaque%2B%2F%3D')
     expect(fetcher.mock.calls[2]![1].cache).toBe('no-store')
+    expect((await runsApi.graph('trace-1', undefined, 'execution')).nodeRuns?.model).toBe(
+      'trace-old',
+    )
+    expect(fetcher.mock.calls[3]![0]).toBe(
+      '/api/v1/runs/trace-1/graph?view=summary&scope=execution',
+    )
     expect(() => runsApi.calls('trace-1', -1)).toThrow('页码')
   })
   it('keeps unavailable distinct from empty and validates bounded pages and diagnostic offsets', () => {

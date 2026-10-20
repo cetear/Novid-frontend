@@ -28,9 +28,10 @@ const states: Record<string, string> = {
     <p class="mono small">
       校验和 {{ payload.checksum ?? '未记录' }} · 到期 {{ payload.expiresAt ?? '未记录' }}
     </p>
-    <pre v-if="payload.preview !== null && payload.state !== 'ACCESS_REVOKED'" tabindex="0">{{
-      payload.preview
-    }}</pre>
+    <pre
+      v-if="payload.preview !== null && !['ACCESS_REVOKED', 'EXPIRED'].includes(payload.state)"
+      tabindex="0"
+      >{{ payload.preview }}</pre>
   </section>
 </template>
 <style scoped>

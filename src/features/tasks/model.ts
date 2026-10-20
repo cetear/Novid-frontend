@@ -35,7 +35,7 @@ export const taskTypeLabels: Record<string, string> = {
 export const taskErrorMessages: Record<string, string> = {
   TASK_RETRY_UNAVAILABLE: '当前任务或失败原因不允许普通续跑，请核对续跑资格。',
   RETRY_BUDGET_INSUFFICIENT: '剩余额度不足，请刷新续跑资格并补充对应额度。',
-  RETRY_MODE_UNAVAILABLE: '当前仅开放整编断点续跑。',
+  RETRY_MODE_UNAVAILABLE: '当前仅开放学习任务的断点续跑。',
   WORKFLOW_INTERRUPTED: '被中断，等待续跑',
   RATE_LIMITED: '模型或执行池并发额度已满，请保留任务 ID，核对服务端并发限制后再处理。',
   MODEL_RATE_LIMITED: '模型提供方限流，请保留任务 ID，核对服务端状态后再处理。',
@@ -56,7 +56,7 @@ export const taskErrorMessages: Record<string, string> = {
   MODEL_STRUCTURED_INVALID: '模型返回的内容结构未通过校验，请保留任务 ID 联系后端排查。',
   MODEL_REPAIR_EXHAUSTED: '模型内容修复后仍未通过校验，请保留任务 ID 联系后端排查。',
   WORKFLOW_REVIEW_REJECTED: '局部修复后仍未通过模型质检。',
-  BUDGET_EXCEEDED: '任务额度已耗尽；失败整编可查询续跑资格并手动追加额度。',
+  BUDGET_EXCEEDED: '任务额度已耗尽；失败的自测或整编可查询续跑资格并手动追加额度。',
   SKILL_UNAVAILABLE: '服务端学习工作流暂不可用。',
   WORKFLOW_RESULT_UNAVAILABLE: '学习结果尚未发布，请核对任务状态。',
   WORKFLOW_EXECUTOR_UNAVAILABLE: '保存的执行版本不可用，请联系后端排查。',

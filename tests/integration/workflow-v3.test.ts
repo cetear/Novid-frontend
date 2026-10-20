@@ -4,7 +4,11 @@ import { tasksApi } from '@/features/tasks/api'
 import { knowledgeApi } from '@/features/knowledge/api'
 import { contentPlanSchema, logicalUnits } from '@/shared/api/contracts/contentPlan'
 import { learningResultSchema } from '@/shared/api/contracts/learning'
-import { compilationSaveSchema, originSchema } from '@/shared/api/contracts/workflow'
+import {
+  compilationSaveSchema,
+  originSchema,
+  readPlanSchema,
+} from '@/shared/api/contracts/workflow'
 import { contentPlan, quizResult, compilationResult } from '../learningFixtures'
 import { approval, document, jsonResponse } from '../fixtures'
 const scope = { mode: 'SELF' as const, knowledgeBaseIds: [], ownerUserId: null }
@@ -22,6 +26,30 @@ function setup(response: Response) {
   return fetcher
 }
 describe('Learning V3 business and save workflow', () => {
+  it('accepts all frozen reading protocols without inferring coverage from observations', () => {
+    const snapshot = {
+      plan: { protocol: 'structure-read-v1', documents: [], fragments: [], packs: [], sources: [] },
+      planHash: 'hash',
+      completedFragments: 0,
+      completedPacks: 1,
+      fullSourceRead: false,
+      topicCards: [],
+    }
+    for (const protocol of [
+      'structure-read-v1',
+      'structure-read-v2-compact',
+      'structure-read-v3-progress',
+    ]) {
+      const parsed = readPlanSchema.parse({ ...snapshot, plan: { ...snapshot.plan, protocol } })
+      expect(parsed.plan.protocol).toBe(protocol)
+      expect(parsed.fullSourceRead).toBe(false)
+      expect(parsed.completedFragments).toBe(0)
+    }
+    expect(
+      readPlanSchema.safeParse({ ...snapshot, plan: { ...snapshot.plan, protocol: 'unknown' } })
+        .success,
+    ).toBe(false)
+  })
   it('rejects multi-document quizzes and duplicate compilation inputs before creating a task', () => {
     const f = setup(jsonResponse({}))
     expect(() => tasksApi.create('QUIZ_GENERATION', '', scope, [101, 102], 'key')).toThrow('一份')

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import WorkflowDetails from '../components/WorkflowDetails.vue'
 import CompilationSave from '../components/CompilationSave.vue'
-import CompilationRetry from '../components/CompilationRetry.vue'
+import LearningRetry from '../components/LearningRetry.vue'
 import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { tasksApi } from '../api'
@@ -294,10 +294,11 @@ function invalidateLearning(reason: unknown) {
       </p>
     </div>
     <TaskMedia v-if="isMedia" :task="task" @changed="refresh" />
-    <CompilationRetry
-      v-if="task.taskType === 'KNOWLEDGE_COMPILATION' && task.status === 'FAILED'"
+    <LearningRetry
+      v-if="isLearning && task.status === 'FAILED'"
       :task="task"
       @changed="refresh"
+      @conflict="refresh"
       @invalidated="invalidateLearning" />
     <LearningResultView v-if="learning" :result="learning" @invalidated="invalidateLearning" />
     <CompilationSave

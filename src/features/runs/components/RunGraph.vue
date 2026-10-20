@@ -42,12 +42,15 @@ watch(
 const groups = computed(() => timelineGroups(props.graph.nodes))
 const summary = computed(() => props.graph.nodes.find((node) => node.spanId === selectedId.value))
 const selected = computed(() => nodeDetail.data.value ?? summary.value)
+const selectedRun = computed(
+  () => props.graph.nodeRuns?.[selectedId.value] ?? props.graph.run.traceId,
+)
 watch(selectedId, (id) => {
   nodeDetail.reset()
   if (!id) return
   void nodeDetail.load(async (signal) => {
     try {
-      return await runsApi.node(props.graph.run.traceId, id, signal)
+      return await runsApi.node(selectedRun.value, id, signal)
     } catch (e) {
       if (!signal.aborted && e instanceof ApiError && [401, 403, 404].includes(e.status)) {
         selectedId.value = ''
@@ -117,6 +120,10 @@ function toggleNode(id: string) {
   <section class="panel">
     <h3>实际调用与依赖</h3>
     <p class="muted small">
+      本轮状态以运行摘要为准；延续图可包含历史失败祖先。图中共
+      {{ graph.nodes.length }} 个节点，本轮持久节点 {{ graph.run.nodeCount ?? '未知' }} 个。
+    </p>
+    <p class="muted small">
       实线：嵌套调用；虚线：执行依赖。节点按登记序号排列，序号不代表并行执行顺序。点击节点查看输入、输出和耗时。
       默认仅显示最顶层节点，点击旁边的加号展开一层子节点，点击减号收起全部后代节点。
     </p>
@@ -126,7 +133,9 @@ function toggleNode(id: string) {
     <p v-if="graph.missingNodeIds.length" class="mono small">
       缺失节点：{{ graph.missingNodeIds.join('、') }}
     </p>
-    <p v-if="!rows.length" class="muted">暂无节点记录，请稍后手动刷新；旧摘要可能没有执行节点。</p>
+    <p v-if="!rows.length" class="muted">
+      暂无节点记录，可能仍在落库，请手动刷新；空图不代表未执行。
+    </p>
     <div v-else class="run-graph-scroll">
       <svg
         class="run-graph"
@@ -273,6 +282,10 @@ function toggleNode(id: string) {
       <Feedback :error="nodeDetail.loadError.value" />
       <p v-if="nodeDetail.loading.value">正在核验节点详情…</p>
       <h3>{{ selected.name }}</h3>
+      <p class="mono small">
+        节点原始运行 {{ selectedRun
+        }}{{ selectedRun === graph.run.traceId ? '（本次执行）' : '（历史执行）' }}
+      </p>
       <StatusBadge :status="selected.status" />
       <p class="mono small">
         {{ selected.spanId }} · 父节点 {{ selected.parentSpanId ?? '无' }} · 登记序号
@@ -311,7 +324,7 @@ function toggleNode(id: string) {
         <ModelCalls
           v-if="selected.type === 'AGENT' || selected.observation?.callId"
           :key="selected.spanId"
-          :trace-id="graph.run.traceId"
+          :trace-id="selectedRun"
           :node-id="selected.type === 'AGENT' ? selected.name : undefined"
           :initial-call-id="selected.observation?.callId"
           @invalidated="emit('invalidated', $event)"
@@ -331,8 +344,9 @@ function toggleNode(id: string) {
       {{ usage.unknown }} · 模拟节点 {{ usage.simulated }}
     </p>
     <p class="muted small">
-      只加总 MODEL / EMBEDDING 叶节点的已知 PROVIDER
-      用量，父节点不重复计数。未知部分没有计入，费用状态 {{ graph.costStatus }}；不换算金额。
+      延续图包含历史节点时，以下用量统计也包含这些节点，不代表本次执行新增消耗。 只加总 MODEL /
+      EMBEDDING 叶节点的已知 PROVIDER 用量，父节点不重复计数。未知部分没有计入，费用状态
+      {{ graph.costStatus }}；不换算金额。
     </p>
   </section>
 </template>

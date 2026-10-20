@@ -20,6 +20,15 @@ const side = ref<'INPUT' | 'OUTPUT'>('INPUT'),
   view = ref<'raw' | 'model'>('raw')
 const cursors = ref<Array<string | undefined>>([undefined]),
   page = ref(0)
+const rawFallback = ref(false)
+function payloadFailure(e: unknown) {
+  guard(e)
+  rawFallback.value =
+    e instanceof ApiError &&
+    e.code === 'MODEL_CALL_PAYLOAD_UNAVAILABLE' &&
+    side.value === 'OUTPUT' &&
+    view.value === 'model'
+}
 function guard(e: unknown) {
   if (
     e instanceof ApiError &&
@@ -37,11 +46,13 @@ function guard(e: unknown) {
   }
 }
 function refresh() {
+  rawFallback.value = false
+  action.error.value = ''
   payload.reset()
   cursors.value = [undefined]
   page.value = 0
   downloads.renew()
-  void detail.load(async (signal) => {
+  return detail.load(async (signal) => {
     try {
       return await runsApi.call(props.traceId, props.callId, signal)
     } catch (e) {
@@ -52,6 +63,7 @@ function refresh() {
 }
 watch(() => [props.traceId, props.callId], refresh, { immediate: true })
 watch([side, view], () => {
+  rawFallback.value = false
   cursors.value = [undefined]
   page.value = 0
   // Starting a new read invalidates every outstanding page response.
@@ -66,7 +78,7 @@ watch([side, view], () => {
         signal,
       )
     } catch (e) {
-      if (!signal.aborted) guard(e)
+      if (!signal.aborted) payloadFailure(e)
       throw e
     }
   })
@@ -90,7 +102,7 @@ function read(next = 0) {
       }
       return result
     } catch (e) {
-      if (!signal.aborted) guard(e)
+      if (!signal.aborted) payloadFailure(e)
       throw e
     }
   })
@@ -114,6 +126,10 @@ function download() {
     }
   })
 }
+async function readRaw() {
+  await refresh()
+  if (detail.data.value?.output.state === 'READY') view.value = 'raw'
+}
 </script>
 <template>
   <section
@@ -123,6 +139,10 @@ function download() {
   >
     <el-button :loading="detail.loading.value" @click="refresh">重新核验调用</el-button>
     <Feedback :error="detail.loadError.value || action.error.value" />
+    <section v-if="rawFallback">
+      <p>模型文本索引或归档不可用，V30 部署前的归档不会补建索引；可重新核验后改看原始响应。</p>
+      <el-button @click="readRaw">改看原始响应</el-button>
+    </section>
     <template v-if="detail.data.value">
       <h4>调用 {{ detail.data.value.call.callId }}</h4>
       <p>

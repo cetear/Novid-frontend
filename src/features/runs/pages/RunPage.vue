@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { watch } from 'vue'
+import { ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { runsApi } from '../api'
 import type { TraceGraph } from '@/shared/api/contracts/backend'
@@ -14,14 +14,16 @@ import StatusBadge from '@/shared/ui/StatusBadge.vue'
 import FeePanel from '@/features/fees/components/FeePanel.vue'
 const route = useRoute(),
   { data, loading, loadError, load } = useLoad<TraceGraph>()
+const scope = ref<'continuation' | 'execution'>('continuation')
 function refresh() {
-  void load((signal) => runsApi.graph(String(route.params.traceId), signal))
+  void load((signal) => runsApi.graph(String(route.params.traceId), signal, scope.value))
 }
 function invalidated(e: unknown) {
   data.value = null
   loadError.value = errorMessage(e)
 }
 watch(() => route.params.traceId, refresh, { immediate: true })
+watch(scope, refresh)
 </script>
 <template>
   <PageHeader
@@ -30,6 +32,13 @@ watch(() => route.params.traceId, refresh, { immediate: true })
     description="本人持久节点、真实时间线与调用／依赖关系。手动刷新查看最新记录。"
     ><el-button :loading="loading" @click="refresh">刷新</el-button></PageHeader
   ><Feedback :error="loadError" />
+  <label class="graph-scope"
+    >节点范围
+    <select v-model="scope">
+      <option value="continuation">续跑延续（含已授权历史）</option>
+      <option value="execution">仅本次执行</option>
+    </select></label
+  >
   <div v-if="data" class="panel">
     <StatusBadge :status="data.run.status" /><el-descriptions :column="1" border
       ><el-descriptions-item label="运行标识"
@@ -58,7 +67,12 @@ watch(() => route.params.traceId, refresh, { immediate: true })
       ><span v-if="data.run.sessionId" class="muted small">关联会话 #{{ data.run.sessionId }}</span>
     </div>
   </div>
-  <RunGraph v-if="data" :key="data.run.traceId" :graph="data" @invalidated="invalidated" />
+  <RunGraph
+    v-if="data"
+    :key="data.run.traceId + ':' + scope"
+    :graph="data"
+    @invalidated="invalidated"
+  />
   <section v-if="data" class="panel">
     <ModelCalls :key="data.run.traceId" :trace-id="data.run.traceId" @invalidated="invalidated" />
   </section>

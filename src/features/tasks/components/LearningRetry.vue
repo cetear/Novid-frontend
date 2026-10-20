@@ -8,12 +8,14 @@ import { taskErrorMessages } from '../model'
 import { ApiError } from '@/shared/api/errors'
 import { useAction } from '@/shared/lib/useAction'
 import { usePageSignal } from '@/shared/lib/usePageSignal'
+import { useLoad } from '@/shared/lib/useLoad'
 import Feedback from '@/shared/ui/Feedback.vue'
 const props = defineProps<{ task: TaskSnapshot }>()
-const emit = defineEmits<{ changed: []; invalidated: [error: unknown] }>()
+const emit = defineEmits<{ changed: []; conflict: []; invalidated: [error: unknown] }>()
 const requests = usePageSignal()
-const { busy, error, run } = useAction()
-const plan = ref<RetryPlan | null>(null)
+const { busy: submitting, error, run } = useAction()
+const { data: plan, loading: checking, loadError, load: loadPlan } = useLoad<RetryPlan>()
+const busy = computed(() => submitting.value || checking.value)
 const pending = ref<{ key: string; request: RetryRequest } | null>(null)
 const fields = [
   {
@@ -39,13 +41,15 @@ const insufficient = computed(
   () => !!plan.value && fields.some((f) => plan.value![f.remaining] + additions[f.key] <= 0),
 )
 watch(
-  () => [props.task.taskId, props.task.stateVersion],
-  () => {
+  [() => props.task.taskId, () => props.task.stateVersion],
+  (next, previous) => {
     requests.renew()
     plan.value = null
     pending.value = null
-    error.value = ''
+    if (next[0] !== previous?.[0]) error.value = ''
+    void load()
   },
+  { immediate: true },
 )
 function denied(e: unknown) {
   if (e instanceof ApiError && [401, 403, 404].includes(e.status)) {
@@ -55,12 +59,11 @@ function denied(e: unknown) {
   }
 }
 function load() {
-  void run(async () => {
-    plan.value = null
+  return loadPlan(async (signal) => {
     try {
-      plan.value = await tasksApi.retryPlan(props.task.taskId, requests.signal)
+      return await tasksApi.retryPlan(props.task.taskId, signal)
     } catch (e) {
-      denied(e)
+      if (!signal.aborted) denied(e)
       throw e
     }
   })
@@ -100,24 +103,29 @@ function submit() {
         plan.value = null
       }
       denied(e)
+      if (e instanceof ApiError && (e.status === 409 || e.code === 'RETRY_BUDGET_INSUFFICIENT')) {
+        await load()
+        if (e.status === 409) emit('conflict')
+      }
       throw e
     }
   })
 }
 </script>
 <template>
-  <section class="panel compilation-retry">
-    <h3>整编断点续跑</h3>
+  <section class="panel learning-retry">
+    <h3>{{ task.taskType === 'QUIZ_GENERATION' ? '自测' : '整编' }}断点续跑</h3>
     <p>
       复用原任务已完成的节点和工作包，保留累计用量。追加额度会提高原任务上限，可能产生新的模型费用。
     </p>
-    <el-button :loading="busy" :disabled="!!pending" @click="load">查询续跑资格</el-button>
-    <Feedback :error="error" />
+    <el-button :loading="busy" :disabled="!!pending" @click="load()">查询续跑资格</el-button>
+    <Feedback :error="error || loadError" />
     <template v-if="plan">
       <p>
         已完成节点 {{ plan.completedNodes }} · 待处理节点 {{ plan.pendingNodes }} · 已验收包
         {{ plan.acceptedPackages }} · 待处理包 {{ plan.pendingPackages }}
       </p>
+      <p class="muted small">节点数和工作包数不等于完成题数或章节数。</p>
       <p>
         {{ plan.canContinue ? '当前失败原因允许续跑，仍须核对额度。' : '当前任务不能普通续跑。' }}
       </p>
@@ -128,39 +136,41 @@ function submit() {
         失败原因：{{ taskErrorMessages[plan.errorCode] || plan.errorCode }}（{{ plan.errorCode }}）
       </p>
       <p>剩余额度为负表示已经超额；追加后的总上限由服务端核验。资料及模型容量上限保持原值。</p>
-      <el-form label-position="top" class="retry-fields" @submit.prevent="submit">
-        <el-form-item
-          v-for="f in fields"
-          :key="f.key"
-          :label="'追加' + f.label"
-          :for="'retry-' + f.key"
-        >
-          <span class="remaining"
-            >剩余 {{ plan[f.remaining]
-            }}{{ f.key === 'additionalAmount' ? ' ' + plan.currency : '' }}</span
+      <template v-if="plan.canContinue"
+        ><el-form label-position="top" class="retry-fields" @submit.prevent="submit">
+          <el-form-item
+            v-for="f in fields"
+            :key="f.key"
+            :label="'追加' + f.label"
+            :for="'retry-' + f.key"
           >
-          <el-input-number
-            :key="f.key + String(busy || !!pending || !plan.canContinue)"
-            :id="'retry-' + f.key"
-            v-model="additions[f.key]"
-            :min="0"
-            :max="f.max"
-            :precision="f.key === 'additionalAmount' ? 8 : 0"
-            :disabled="busy || !!pending || !plan.canContinue"
-          />
-        </el-form-item>
-      </el-form>
-      <p v-if="insufficient" class="inline-error">
-        至少一项额度不足，通常需增加对应额度；仅发布已完成结果时以服务端核验为准。
-      </p>
-      <el-button
-        v-if="!pending"
-        type="primary"
-        :loading="busy"
-        :disabled="!plan.canContinue"
-        @click="submit"
-        >继续原整编任务</el-button
-      >
+            <span class="remaining"
+              >剩余 {{ plan[f.remaining]
+              }}{{ f.key === 'additionalAmount' ? ' ' + plan.currency : '' }}</span
+            >
+            <el-input-number
+              :key="f.key + String(busy || !!pending || !plan.canContinue)"
+              :id="'retry-' + f.key"
+              v-model="additions[f.key]"
+              :min="0"
+              :max="f.max"
+              :precision="f.key === 'additionalAmount' ? 8 : 0"
+              :disabled="busy || !!pending || !plan.canContinue"
+            />
+          </el-form-item>
+        </el-form>
+        <p v-if="insufficient" class="inline-error">
+          至少一项额度不足，通常需增加对应额度；仅发布已完成结果时以服务端核验为准。
+        </p>
+        <el-button
+          v-if="!pending"
+          type="primary"
+          :loading="busy"
+          :disabled="!plan.canContinue"
+          @click="submit"
+          >从断点继续处理</el-button
+        >
+      </template>
     </template>
     <template v-if="pending">
       <p>提交结果尚未确认，已锁定本次追加值。再次确认会复用原请求，避免重复增加额度。</p>
@@ -169,7 +179,7 @@ function submit() {
   </section>
 </template>
 <style scoped>
-.compilation-retry {
+.learning-retry {
   overflow-wrap: anywhere;
 }
 .retry-fields {

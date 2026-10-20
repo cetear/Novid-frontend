@@ -26,13 +26,11 @@ test('真实续跑：失败整编资格、拒绝原因与原任务页面', async
     await page.getByRole('button', { name: '查询续跑资格' }).click()
     expect((await response).status()).toBe(200)
     expect(plan.taskId).toBe(taskId)
-    await expect(page.locator('.compilation-retry')).toContainText(
-      '已验收包 ' + plan.acceptedPackages,
-    )
+    await expect(page.locator('.learning-retry')).toContainText('已验收包 ' + plan.acceptedPackages)
     if (!plan.canContinue) {
-      await expect(page.getByRole('button', { name: '继续原整编任务', exact: true })).toBeDisabled()
+      await expect(page.getByRole('button', { name: '从断点继续处理', exact: true })).toHaveCount(0)
       for (const reason of plan.blockers)
-        await expect(page.locator('.compilation-retry')).toContainText(reason)
+        await expect(page.locator('.learning-retry')).toContainText(reason)
     }
     await page.setViewportSize({ width: 375, height: 812 })
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)

@@ -11,6 +11,12 @@ const auth = useAuth(),
 const username = ref(''),
   password = ref(''),
   { busy, error, run } = useAction()
+function fillAccount(role: 'admin' | 'user') {
+  username.value = role === 'admin' ? 'test_admin' : 'test_user'
+  password.value =
+    role === 'admin' ? 'Novid!jlaqMGZqcfIi-JIQl8Vm' : '5gj_F0bofxEEVZ3aFQq9mjjn8TAYebshZ0d4D9Pj2I8'
+  error.value = ''
+}
 function login() {
   void run(async () => {
     await auth.login(username.value, password.value)
@@ -82,9 +88,39 @@ function login() {
             >登录工作台 →</el-button
           ></el-form
         >
+        <div class="login-presets">
+          <el-button
+            native-type="button"
+            size="large"
+            :disabled="busy"
+            @click="fillAccount('admin')"
+          >
+            管理员登录
+          </el-button>
+          <el-button
+            native-type="button"
+            size="large"
+            :disabled="busy"
+            @click="fillAccount('user')"
+          >
+            普通用户登录
+          </el-button>
+        </div>
+        <p class="muted">点击可自动填入测试账号，随后点击“登录工作台”。</p>
         <p class="login-footnote">账号由管理员创建。首次登录后，请先设置自己的密码。</p>
       </div>
       <span class="panel-footer">资料有边界，探索有依据。</span>
     </section>
   </div>
 </template>
+<style scoped>
+.login-presets {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+.login-presets .el-button {
+  margin-left: 0;
+}
+</style>
