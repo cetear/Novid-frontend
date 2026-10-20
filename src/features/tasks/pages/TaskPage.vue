@@ -51,7 +51,7 @@ const plan = ref<ContentPlanSnapshot | null>(null),
   planChecked = ref(false)
 const { busy, error, notice, run } = useAction()
 known.created = null
-async function fetchTask(signal?: AbortSignal) {
+async function fetchTask(signal?: AbortSignal, includePlan = true) {
   try {
     task.value = await tasksApi.get(positiveId(route.params.id), signal)
     if (!['SUCCEEDED', 'PARTIAL'].includes(task.value.status)) {
@@ -59,7 +59,7 @@ async function fetchTask(signal?: AbortSignal) {
       report.value = ''
     }
     known.add(task.value.taskId)
-    if (isLearning.value || task.value.taskType === 'NOTES_PPT') {
+    if (includePlan && (isLearning.value || task.value.taskType === 'NOTES_PPT')) {
       plan.value = await tasksApi.contentPlan(task.value.taskId, signal)
       planChecked.value = true
     }
@@ -132,7 +132,7 @@ function action(value: 'pause' | 'resume' | 'cancel') {
 function readReport(download = false) {
   void run(async () => {
     report.value = ''
-    await fetchTask(requests.signal)
+    await fetchTask(requests.signal, false)
     if (
       !task.value ||
       !['SUCCEEDED', 'PARTIAL'].includes(task.value.status) ||

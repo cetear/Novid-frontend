@@ -576,6 +576,7 @@ select,
   gap: 24px;
 }
 .document-choice {
+  line-height: 1.6;
   padding: 16px 8px;
   border-color: var(--color-border);
 }

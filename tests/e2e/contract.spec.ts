@@ -7,6 +7,26 @@ import { createHash } from 'node:crypto'
 import { learningTask, quizResult, compilationResult, contentPlan } from '../learningFixtures'
 import { retryPlan } from '../retryFixtures'
 import { modelCall } from '../modelCallFixtures'
+test('已发布产物下载不依赖内容计划解析成功', async ({ page }) => {
+  const state = await mockBackend(page)
+  state.task = {
+    ...structuredClone(learningTask),
+    taskType: 'KNOWLEDGE_COMPILATION',
+    status: 'SUCCEEDED',
+    artifactId: 83,
+  }
+  await page.route('**/api/v1/tasks/51/content-plan', (route) =>
+    route.fulfill({ json: { plan: { version: 999 } } }),
+  )
+  await login(page, '/tasks/51')
+  await expect(page.getByText('响应字段不符合契约', { exact: false })).toBeVisible()
+  const download = page.waitForEvent('download')
+  await page.getByRole('button', { name: '下载 Markdown', exact: true }).click()
+  const file = await download
+  expect(file.suggestedFilename()).toBe('report-51.md')
+  expect(await file.failure()).toBeNull()
+})
+
 test('自测续跑：自动资格、额度不足、同键重试及原任务轮询', async ({ page }) => {
   const state = await mockBackend(page)
   state.task = {

@@ -361,7 +361,10 @@ function prepare() {
             v-for="event in displayedHistory"
             :key="event.seq"
             class="structure-row history-message"
-            :class="{ 'history-message-user': event.role === 'USER' }"
+            :class="{
+              'history-message-user': event.role === 'USER',
+              'history-message-assistant': event.role === 'ASSISTANT',
+            }"
           >
             <span class="muted small"
               >#{{ event.seq }} · {{ event.role }} · {{ event.status }}
