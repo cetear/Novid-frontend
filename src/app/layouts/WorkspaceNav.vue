@@ -9,7 +9,7 @@ import {
   Setting,
   ArrowRight,
   Wallet,
-  Monitor,
+  // Monitor,
   Plus,
   Close,
 } from '@element-plus/icons-vue'
@@ -50,9 +50,10 @@ const icons = { ChatDotRound, Collection, Document, Star, DataLine, Wallet }
     <nav aria-label="管理导航">
       <RouterLink to="/admin/users" class="nav-item" @click="emit('navigate')"
         ><el-icon aria-hidden="true"><User /></el-icon><span>用户管理</span></RouterLink
-      ><RouterLink to="/admin/operations" class="nav-item" @click="emit('navigate')"
-        ><el-icon aria-hidden="true"><Monitor /></el-icon><span>运营与审计</span></RouterLink
       >
+      <!-- <RouterLink to="/admin/operations" class="nav-item" @click="emit('navigate')"
+        ><el-icon aria-hidden="true"><Monitor /></el-icon><span>运营与审计</span></RouterLink
+      > -->
     </nav></template
   >
   <div class="sidebar-note">

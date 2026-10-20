@@ -30,7 +30,7 @@ const auth = useAuth(),
   route = useRoute()
 const topic = ref(''),
   remarks = ref(''),
-  taskType = ref<TaskType>('QUIZ_GENERATION'),
+  taskType = ref<TaskType>('KNOWLEDGE_COMPILATION'),
   selected = ref<number[]>([]),
   page = ref(0),
   knownId = ref('')
@@ -140,7 +140,7 @@ onMounted(() => {
       value.document.activeProcessingRevision === null
     )
       throw new Error('生成资料尚未就绪，请等待入库完成')
-    taskType.value = 'QUIZ_GENERATION'
+    taskType.value = 'KNOWLEDGE_COMPILATION'
     scope.set({
       mode: 'SELECTED',
       knowledgeBaseIds: [value.document.knowledgeBaseId],
@@ -197,12 +197,12 @@ function open() {
       <h2>{{ mediaTask ? '创建媒体任务' : '创建学习任务' }}</h2>
       <el-form label-position="top" @submit.prevent="create"
         ><el-form-item label="输出类型"
-          ><el-radio-group v-model="taskType" :disabled="busy"
-            ><el-radio-button value="QUIZ_GENERATION">学习自测</el-radio-button
-            ><el-radio-button value="KNOWLEDGE_COMPILATION">资料整编</el-radio-button
-            ><el-radio-button value="NOTES_PPT">演示文稿</el-radio-button
-            ><el-radio-button value="NOTES_VIDEO">教学视频</el-radio-button></el-radio-group
-          ></el-form-item
+          ><el-radio-group v-model="taskType" :disabled="busy">
+            <!-- <el-radio-button value="QUIZ_GENERATION">学习自测</el-radio-button> -->
+            <el-radio-button value="KNOWLEDGE_COMPILATION">资料整编</el-radio-button>
+            <!-- <el-radio-button value="NOTES_PPT">演示文稿</el-radio-button> -->
+            <!-- <el-radio-button value="NOTES_VIDEO">教学视频</el-radio-button> -->
+          </el-radio-group></el-form-item
         >
         <template v-if="taskType === 'QUIZ_GENERATION'">
           <el-form-item label="题目数量"

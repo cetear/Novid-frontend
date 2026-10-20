@@ -213,7 +213,7 @@
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 28px max(24px, calc((100% - 820px) / 2));
+  padding: 28px 24px;
   scrollbar-gutter: stable;
 }
 .conversation-thread:focus-visible {
